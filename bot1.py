@@ -44,7 +44,8 @@ def init_db():
             unit TEXT,
             price REAL,
             photo TEXT,
-            discount TEXT
+            discount TEXT,
+            category TEXT
         )
     """)
     cur.execute("""
@@ -96,7 +97,8 @@ class OwnerState(StatesGroup):
     waiting_for_admin_input = State()
 
 class ProductState(StatesGroup):
-    waiting_for_name = State()
+    waiting_for_name = State.id = State()
+    waiting_for_category = State()
     waiting_for_unit = State()
     waiting_for_price = State()
     waiting_for_photo = State()
@@ -191,7 +193,6 @@ async def toggle_site(message: types.Message):
     SITE_ACTIVE = not SITE_ACTIVE
     await owner_panel(message)
 
-# КНОПКА «➕ НАЗНАЧИТЬ АДМИНА»
 @dp.message(F.text == "➕ Назначить админа")
 async def make_admin_button(message: types.Message, state: FSMContext):
     if message.from_user.id != SUPER_ADMIN_ID:
@@ -212,8 +213,7 @@ async def make_admin_button(message: types.Message, state: FSMContext):
         role = "Админ 🟢" if is_admin == 1 else "Пользователь"
         text += f"• **{name}** (@{uname}) — ID: `{u_id}` ({role})\n"
 
-    text += "\n✍️ **Напишите ID или юзернейм (@username) для назначения на роль администратора:**"
-    
+    text += "\n✍️ **Напишите ID или юзернейм (@username) для назначения администратором:**"
     await message.answer(text, parse_mode="Markdown")
     await state.set_state(OwnerState.waiting_for_admin_input)
 
@@ -233,7 +233,6 @@ async def process_admin_input(message: types.Message, state: FSMContext):
         cur.execute("SELECT user_id, name FROM users WHERE LOWER(username) = LOWER(?)", (user_input,))
 
     target_user = cur.fetchone()
-
     if target_user:
         target_id, target_name = target_user
         cur.execute("UPDATE users SET is_admin = 1 WHERE user_id = ?", (target_id,))
@@ -250,7 +249,6 @@ async def process_admin_input(message: types.Message, state: FSMContext):
     await state.clear()
     await owner_panel(message)
 
-# КНОПКА «👥 СПИСОК АДМИНОВ»
 @dp.message(F.text == "👥 Список админов")
 async def manage_admins(message: types.Message):
     if message.from_user.id != SUPER_ADMIN_ID:
@@ -307,7 +305,7 @@ async def products_menu(message: types.Message):
 async def list_all_products(message: types.Message):
     conn = sqlite3.connect("store.db")
     cur = conn.cursor()
-    cur.execute("SELECT id, name, unit, price, photo, discount FROM products")
+    cur.execute("SELECT id, name, unit, price, photo, discount, category FROM products")
     products = cur.fetchall()
     conn.close()
 
@@ -317,9 +315,10 @@ async def list_all_products(message: types.Message):
 
     await message.answer(f"📜 Всего товаров: {len(products)}")
     for p in products:
-        p_id, name, unit, price, photo, discount = p
+        p_id, name, unit, price, photo, discount, cat = p
         disc_text = f"\n🏷 Скидка: {discount}" if discount else ""
-        caption = f"📦 *{name}*\nЦена: {price} руб. / {unit}{disc_text}"
+        cat_text = f"\n📁 Каталог: {cat}" if cat else ""
+        caption = f"📦 *{name}*{cat_text}\nЦена: {price} руб. / {unit}{disc_text}"
         if photo:
             await message.answer_photo(photo=photo, caption=caption, parse_mode="Markdown")
         else:
@@ -327,7 +326,32 @@ async def list_all_products(message: types.Message):
 
 @dp.message(F.text == "➕ Добавить товар")
 async def add_product_start(message: types.Message, state: FSMContext):
-    await message.answer("Введите название товара:")
+    conn = sqlite3.connect("store.db")
+    cur = conn.cursor()
+    cur.execute("SELECT name FROM categories")
+    cats = cur.fetchall()
+    conn.close()
+
+    if not cats:
+        await message.answer("❌ Сначала создайте каталог!")
+        return
+
+    kb_builder = [[types.KeyboardButton(text=c[0])] for c in cats]
+    kb_builder.append([types.KeyboardButton(text="🔙 Главное меню")])
+    markup = types.ReplyKeyboardMarkup(keyboard=kb_builder, resize_keyboard=True)
+
+    await message.answer("📁 Выберите каталог, в который хотите добавить товар:", reply_markup=markup)
+    await state.set_state(ProductState.waiting_for_category)
+
+@dp.message(ProductState.waiting_for_category)
+async def process_prod_category(message: types.Message, state: FSMContext):
+    if message.text == "🔙 Главное меню":
+        await state.clear()
+        await back_to_main(message)
+        return
+
+    await state.update_data(category=message.text.strip())
+    await message.answer("Введите название товара:", reply_markup=types.ReplyKeyboardRemove())
     await state.set_state(ProductState.waiting_for_name)
 
 @dp.message(ProductState.waiting_for_name)
@@ -359,16 +383,24 @@ async def process_prod_price(message: types.Message, state: FSMContext):
     await message.answer("Пришлите фото товара:")
     await state.set_state(ProductState.waiting_for_photo)
 
-@dp.message(ProductState.waiting_for_photo, F.photo)
+# ИСПРАВЛЕНИЕ: Прием фото или файла (документа с картинкой)
+@dp.message(ProductState.waiting_for_photo, F.photo | F.document)
 async def process_prod_photo(message: types.Message, state: FSMContext):
-    photo_id = message.photo[-1].file_id
+    if message.photo:
+        photo_id = message.photo[-1].file_id
+    elif message.document:
+        photo_id = message.document.file_id
+    else:
+        await message.answer("Пожалуйста, отправьте именно фото товара.")
+        return
+
     data = await state.get_data()
     
     conn = sqlite3.connect("store.db")
     cur = conn.cursor()
     cur.execute(
-        "INSERT INTO products (name, unit, price, photo) VALUES (?, ?, ?, ?)",
-        (data["name"], data["unit"], data["price"], photo_id)
+        "INSERT INTO products (name, unit, price, photo, category) VALUES (?, ?, ?, ?, ?)",
+        (data["name"], data["unit"], data["price"], photo_id, data["category"])
     )
     conn.commit()
     conn.close()
