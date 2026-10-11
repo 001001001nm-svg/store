@@ -15,7 +15,7 @@ SUPER_ADMIN_ID = 8636623905
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher(storage=MemoryStorage())
 
-# Глобальные флаги состояния бота и сайта
+# Глобальные флаги состояния
 BOT_ACTIVE = True
 SITE_ACTIVE = True
 
@@ -44,8 +44,7 @@ def init_db():
             unit TEXT,
             price REAL,
             photo TEXT,
-            discount TEXT,
-            category TEXT
+            discount TEXT
         )
     """)
     cur.execute("""
@@ -93,6 +92,9 @@ def set_admin_status(user_id, status):
 class RegState(StatesGroup):
     waiting_for_name = State()
 
+class OwnerState(StatesGroup):
+    waiting_for_admin_input = State()
+
 class ProductState(StatesGroup):
     waiting_for_name = State()
     waiting_for_unit = State()
@@ -109,7 +111,7 @@ class AdState(StatesGroup):
     waiting_for_title = State()
     waiting_for_content = State()
 
-# --- Клавиатуры ---
+# --- Главное меню ---
 def main_menu_kb(is_owner, is_admin):
     kb = []
     if is_admin or is_owner:
@@ -117,8 +119,6 @@ def main_menu_kb(is_owner, is_admin):
         kb.append([types.KeyboardButton(text="🏷 Скидки"), types.KeyboardButton(text="📢 Реклама")])
     if is_owner:
         kb.append([types.KeyboardButton(text="👑 Панель владельца")])
-    if not kb:
-        kb.append([types.KeyboardButton(text="ℹ️ Информация")])
     return types.ReplyKeyboardMarkup(keyboard=kb, resize_keyboard=True)
 
 # --- Хэндлеры ---
@@ -166,13 +166,14 @@ async def owner_panel(message: types.Message):
         keyboard=[
             [types.KeyboardButton(text="🔴 Выключить бота" if BOT_ACTIVE else "🟢 Включить бота")],
             [types.KeyboardButton(text="🔴 Выключить сайт" if SITE_ACTIVE else "🟢 Включить сайт")],
-            [types.KeyboardButton(text="👥 Управление админами"), types.KeyboardButton(text="🔙 Главное меню")]
+            [types.KeyboardButton(text="➕ Назначить админа"), types.KeyboardButton(text="👥 Список админов")],
+            [types.KeyboardButton(text="🔙 Главное меню")]
         ],
         resize_keyboard=True
     )
     status_bot = "Включен 🟢" if BOT_ACTIVE else "Выключен 🔴"
     status_site = "Включен 🟢" if SITE_ACTIVE else "Выключен 🔴"
-    await message.answer(f"👑 Панель владельца:\nСтатус бота: {status_bot}\nСтатус сайта: {status_site}", reply_markup=kb)
+    await message.answer(f"👑 Панель владельца:\n\nСтатус бота: {status_bot}\nСтатус сайта: {status_site}", reply_markup=kb)
 
 @dp.message(F.text.in_(["🔴 Выключить бота", "🟢 Включить бота"]))
 async def toggle_bot(message: types.Message):
@@ -190,32 +191,88 @@ async def toggle_site(message: types.Message):
     SITE_ACTIVE = not SITE_ACTIVE
     await owner_panel(message)
 
-@dp.message(F.text == "👥 Управление админами")
-async def manage_admins(message: types.Message):
+# КНОПКА «➕ НАЗНАЧИТЬ АДМИНА»
+@dp.message(F.text == "➕ Назначить админа")
+async def make_admin_button(message: types.Message, state: FSMContext):
     if message.from_user.id != SUPER_ADMIN_ID:
         return
+
     conn = sqlite3.connect("store.db")
     cur = conn.cursor()
     cur.execute("SELECT user_id, name, username, is_admin FROM users")
     users = cur.fetchall()
     conn.close()
 
-    text = "👥 **Список пользователей и админов:**\n\n"
-    kb_builder = []
+    if not users:
+        await message.answer("Пользователей в базе нет.")
+        return
+
+    text = "👥 **Все участники бота:**\n\n"
     for u_id, name, uname, is_admin in users:
         role = "Админ 🟢" if is_admin == 1 else "Пользователь"
-        text += f"• {name} (@{uname}) [ID: `{u_id}`] — {role}\n"
+        text += f"• **{name}** (@{uname}) — ID: `{u_id}` ({role})\n"
+
+    text += "\n✍️ **Напишите ID или юзернейм (@username) для назначения на роль администратора:**"
+    
+    await message.answer(text, parse_mode="Markdown")
+    await state.set_state(OwnerState.waiting_for_admin_input)
+
+@dp.message(OwnerState.waiting_for_admin_input)
+async def process_admin_input(message: types.Message, state: FSMContext):
+    if message.from_user.id != SUPER_ADMIN_ID:
+        return
+
+    user_input = message.text.strip().replace("@", "")
+    conn = sqlite3.connect("store.db")
+    cur = conn.cursor()
+
+    if user_input.isdigit():
+        target_id = int(user_input)
+        cur.execute("SELECT user_id, name FROM users WHERE user_id = ?", (target_id,))
+    else:
+        cur.execute("SELECT user_id, name FROM users WHERE LOWER(username) = LOWER(?)", (user_input,))
+
+    target_user = cur.fetchone()
+
+    if target_user:
+        target_id, target_name = target_user
+        cur.execute("UPDATE users SET is_admin = 1 WHERE user_id = ?", (target_id,))
+        conn.commit()
+        await message.answer(f"✅ {target_name} (ID: `{target_id}`) успешно назначен администратором!", parse_mode="Markdown")
+        try:
+            await bot.send_message(target_id, "🎉 Вам выданы права администратора! Нажмите /start для открытия меню.")
+        except:
+            pass
+    else:
+        await message.answer("❌ Пользователь не найден. Проверьте правильность ID или юзернейма.")
+
+    conn.close()
+    await state.clear()
+    await owner_panel(message)
+
+# КНОПКА «👥 СПИСОК АДМИНОВ»
+@dp.message(F.text == "👥 Список админов")
+async def manage_admins(message: types.Message):
+    if message.from_user.id != SUPER_ADMIN_ID:
+        return
+    conn = sqlite3.connect("store.db")
+    cur = conn.cursor()
+    cur.execute("SELECT user_id, name, username, is_admin FROM users WHERE is_admin = 1")
+    admins = cur.fetchall()
+    conn.close()
+
+    text = "👥 **Список администраторов:**\n\n"
+    kb_builder = []
+    for u_id, name, uname, is_admin in admins:
+        text += f"• {name} (@{uname}) [ID: `{u_id}`]\n"
         if u_id != SUPER_ADMIN_ID:
-            if is_admin == 1:
-                kb_builder.append([types.InlineKeyboardButton(text=f"Снять с админов: {name}", callback_data=f"unadmin_{u_id}")])
-                kb_builder.append([types.InlineKeyboardButton(text=f"Забанить: {name}", callback_data=f"ban_{u_id}")])
-            else:
-                kb_builder.append([types.InlineKeyboardButton(text=f"Назначить админом: {name}", callback_data=f"makeadmin_{u_id}")])
+            kb_builder.append([types.InlineKeyboardButton(text=f"Снять админа: {name}", callback_data=f"unadmin_{u_id}")])
+            kb_builder.append([types.InlineKeyboardButton(text=f"Забанить: {name}", callback_data=f"ban_{u_id}")])
 
     markup = types.InlineKeyboardMarkup(inline_keyboard=kb_builder) if kb_builder else None
     await message.answer(text, parse_mode="Markdown", reply_markup=markup)
 
-@dp.callback_query(F.data.startswith(("makeadmin_", "unadmin_", "ban_")))
+@dp.callback_query(F.data.startswith(("unadmin_", "ban_")))
 async def admin_actions(callback: types.CallbackQuery):
     if callback.from_user.id != SUPER_ADMIN_ID:
         return
@@ -224,18 +281,13 @@ async def admin_actions(callback: types.CallbackQuery):
     
     conn = sqlite3.connect("store.db")
     cur = conn.cursor()
-    if action == "makeadmin":
-        cur.execute("UPDATE users SET is_admin = 1 WHERE user_id = ?", (target_id,))
-        conn.commit()
-        await callback.answer("Права администратора выданы!")
-    elif action == "unadmin":
+    if action == "unadmin":
         cur.execute("UPDATE users SET is_admin = 0 WHERE user_id = ?", (target_id,))
-        conn.commit()
-        await callback.answer("Админ снят с должности!")
+        await callback.answer("Админ снят!")
     elif action == "ban":
         cur.execute("DELETE FROM users WHERE user_id = ?", (target_id,))
-        conn.commit()
         await callback.answer("Пользователь забанен!")
+    conn.commit()
     conn.close()
     await callback.message.edit_text("Список обновлен.")
 
@@ -245,11 +297,33 @@ async def products_menu(message: types.Message):
     kb = types.ReplyKeyboardMarkup(
         keyboard=[
             [types.KeyboardButton(text="➕ Добавить товар"), types.KeyboardButton(text="🗑 Снять товар")],
-            [types.KeyboardButton(text="🔙 Главное меню")]
+            [types.KeyboardButton(text="📜 Весь список товаров"), types.KeyboardButton(text="🔙 Главное меню")]
         ],
         resize_keyboard=True
     )
     await message.answer("📦 Меню управления товарами:", reply_markup=kb)
+
+@dp.message(F.text == "📜 Весь список товаров")
+async def list_all_products(message: types.Message):
+    conn = sqlite3.connect("store.db")
+    cur = conn.cursor()
+    cur.execute("SELECT id, name, unit, price, photo, discount FROM products")
+    products = cur.fetchall()
+    conn.close()
+
+    if not products:
+        await message.answer("В базе пока нет товаров.")
+        return
+
+    await message.answer(f"📜 Всего товаров: {len(products)}")
+    for p in products:
+        p_id, name, unit, price, photo, discount = p
+        disc_text = f"\n🏷 Скидка: {discount}" if discount else ""
+        caption = f"📦 *{name}*\nЦена: {price} руб. / {unit}{disc_text}"
+        if photo:
+            await message.answer_photo(photo=photo, caption=caption, parse_mode="Markdown")
+        else:
+            await message.answer(caption, parse_mode="Markdown")
 
 @dp.message(F.text == "➕ Добавить товар")
 async def add_product_start(message: types.Message, state: FSMContext):
@@ -336,11 +410,28 @@ async def categories_menu(message: types.Message):
     kb = types.ReplyKeyboardMarkup(
         keyboard=[
             [types.KeyboardButton(text="➕ Добавить каталог"), types.KeyboardButton(text="🗑 Убрать каталог")],
-            [types.KeyboardButton(text="🔙 Главное меню")]
+            [types.KeyboardButton(text="📂 Весь список каталогов"), types.KeyboardButton(text="🔙 Главное меню")]
         ],
         resize_keyboard=True
     )
     await message.answer("📁 Управление каталогами:", reply_markup=kb)
+
+@dp.message(F.text == "📂 Весь список каталогов")
+async def list_all_categories(message: types.Message):
+    conn = sqlite3.connect("store.db")
+    cur = conn.cursor()
+    cur.execute("SELECT name FROM categories")
+    cats = cur.fetchall()
+    conn.close()
+
+    if not cats:
+        await message.answer("Каталогов пока нет.")
+        return
+
+    text = "📂 *Список всех каталогов:*\n\n"
+    for idx, c in enumerate(cats, 1):
+        text += f"{idx}. {c[0]}\n"
+    await message.answer(text, parse_mode="Markdown")
 
 @dp.message(F.text == "➕ Добавить каталог")
 async def add_cat_start(message: types.Message, state: FSMContext):
