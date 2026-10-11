@@ -97,8 +97,8 @@ class OwnerState(StatesGroup):
     waiting_for_admin_input = State()
 
 class ProductState(StatesGroup):
-    waiting_for_name = State.id = State()
     waiting_for_category = State()
+    waiting_for_name = State()
     waiting_for_unit = State()
     waiting_for_price = State()
     waiting_for_photo = State()
@@ -123,7 +123,7 @@ def main_menu_kb(is_owner, is_admin):
         kb.append([types.KeyboardButton(text="👑 Панель владельца")])
     return types.ReplyKeyboardMarkup(keyboard=kb, resize_keyboard=True)
 
-# --- Хэндлеры ---
+# --- Хэндлеры Telegram ---
 @dp.message(CommandStart())
 async def cmd_start(message: types.Message, state: FSMContext):
     global BOT_ACTIVE
@@ -318,7 +318,7 @@ async def list_all_products(message: types.Message):
         p_id, name, unit, price, photo, discount, cat = p
         disc_text = f"\n🏷 Скидка: {discount}" if discount else ""
         cat_text = f"\n📁 Каталог: {cat}" if cat else ""
-        caption = f"📦 *{name}*{cat_text}\nЦена: {price} руб. / {unit}{disc_text}"
+        caption = f"📦 *{name}*{cat_text}\nЦена: {price} сом / {unit}{disc_text}"
         if photo:
             await message.answer_photo(photo=photo, caption=caption, parse_mode="Markdown")
         else:
@@ -383,7 +383,6 @@ async def process_prod_price(message: types.Message, state: FSMContext):
     await message.answer("Пришлите фото товара:")
     await state.set_state(ProductState.waiting_for_photo)
 
-# ИСПРАВЛЕНИЕ: Прием фото или файла (документа с картинкой)
 @dp.message(ProductState.waiting_for_photo, F.photo | F.document)
 async def process_prod_photo(message: types.Message, state: FSMContext):
     if message.photo:
@@ -670,13 +669,170 @@ async def back_to_main(message: types.Message):
     kb = main_menu_kb(is_owner, is_admin)
     await message.answer("Главное меню:", reply_markup=kb)
 
-# --- WEB SERVER (Render) ---
-async def handle_ping(request):
-    return web.Response(text="OK", status=200)
+# --- КРАСИВЫЙ САЙТ В ЗЕЛЕНОМ СТИЛЕ ---
+async def handle_website(request):
+    global SITE_ACTIVE
+    if not SITE_ACTIVE:
+        return web.Response(text="🛠 Сайт временно отключен владельцем.", status=503, content_type="text/plain; charset=utf-8")
+
+    conn = sqlite3.connect("store.db")
+    cur = conn.cursor()
+    
+    # Реклама
+    cur.execute("SELECT title, content FROM advertisements")
+    ads = cur.fetchall()
+    
+    # Каталоги
+    cur.execute("SELECT name FROM categories")
+    categories = [row[0] for row in cur.fetchall()]
+    
+    # Товары
+    cur.execute("SELECT name, unit, price, discount, category FROM products")
+    products = cur.fetchall()
+    conn.close()
+
+    html = f"""
+    <!DOCTYPE html>
+    <html lang="ru">
+    <head>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <title>Продуктовый Магазин</title>
+        <style>
+            body {{ font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; background-color: #f4f6f5; margin: 0; padding: 0; color: #333; }}
+            header {{ background: #1e7e34; color: white; padding: 15px 30px; display: flex; justify-content: space-between; align-items: center; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }}
+            .logo {{ font-size: 24px; font-weight: bold; }}
+            .nav-links {{ display: flex; gap: 20px; font-size: 14px; }}
+            .nav-links span {{ cursor: pointer; opacity: 0.9; }}
+            .nav-links span:hover {{ opacity: 1; text-decoration: underline; }}
+            .search-bar {{ background: #fff; padding: 15px 30px; display: flex; justify-content: center; box-shadow: 0 2px 4px rgba(0,0,0,0.05); }}
+            .search-input {{ width: 100%; max-width: 600px; padding: 12px 20px; border-radius: 25px; border: 1px solid #ddd; outline: none; font-size: 16px; background: #f8f9fa; }}
+            .container {{ max-width: 1200px; margin: 20px auto; padding: 0 20px; }}
+            
+            /* Слайдер рекламы */
+            .banner {{ background: linear-gradient(135deg, #1b5e20, #2e7d32); color: white; border-radius: 12px; padding: 30px; margin-bottom: 30px; box-shadow: 0 4px 12px rgba(0,0,0,0.1); }}
+            .banner h2 {{ margin-top: 0; font-size: 24px; }}
+            .banner p {{ font-size: 16px; opacity: 0.9; }}
+
+            /* Каталоги */
+            .categories-container {{ display: flex; gap: 10px; margin-bottom: 30px; overflow-x: auto; padding-bottom: 5px; }}
+            .cat-pill {{ background: #e8f5e9; color: #2e7d32; padding: 8px 18px; border-radius: 20px; font-weight: 600; font-size: 14px; white-space: nowrap; border: 1px solid #c8e6c9; }}
+
+            /* Сетка товаров */
+            h3 {{ font-size: 22px; color: #2c3e50; margin-bottom: 15px; }}
+            .products-grid {{ display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 20px; margin-bottom: 40px; }}
+            .product-card {{ background: white; border-radius: 12px; padding: 15px; box-shadow: 0 2px 8px rgba(0,0,0,0.05); display: flex; flex-direction: column; justify-content: space-between; transition: transform 0.2s; }}
+            .product-card:hover {{ transform: translateY(-3px); box-shadow: 0 4px 12px rgba(0,0,0,0.1); }}
+            .product-cat {{ font-size: 12px; color: #2e7d32; background: #e8f5e9; padding: 3px 8px; border-radius: 6px; display: inline-block; margin-bottom: 8px; font-weight: 600; }}
+            .product-title {{ font-size: 16px; font-weight: bold; margin-bottom: 8px; color: #2c3e50; }}
+            .product-price {{ font-size: 18px; color: #2e7d32; font-weight: bold; margin-bottom: 10px; }}
+            .product-discount {{ background: #ff9800; color: white; padding: 2px 6px; border-radius: 4px; font-size: 11px; display: inline-block; margin-left: 5px; }}
+            .add-btn {{ background: #2e7d32; color: white; border: none; padding: 8px; border-radius: 8px; cursor: pointer; font-weight: bold; width: 100%; }}
+            .add-btn:hover {{ background: #1b5e20; }}
+
+            /* Футер */
+            footer {{ background: #1e7e34; color: white; padding: 40px 20px; margin-top: 50px; }}
+            .footer-content {{ max-width: 1200px; margin: 0 auto; display: flex; justify-content: space-between; flex-wrap: wrap; gap: 30px; }}
+            .footer-col h4 {{ margin-top: 0; margin-bottom: 15px; font-size: 16px; }}
+            .footer-col p, .footer-col a {{ font-size: 14px; opacity: 0.9; color: white; text-decoration: none; display: block; margin-bottom: 8px; }}
+            .footer-bottom {{ text-align: center; margin-top: 30px; font-size: 13px; opacity: 0.8; border-top: 1px solid rgba(255,255,255,0.2); padding-top: 15px; }}
+        </style>
+    </head>
+    <body>
+        <header>
+            <div class="logo">🛒 Магазин</div>
+            <div class="nav-links">
+                <span>Новинки</span>
+                <span>Выбор редакции</span>
+                <span>Товары со скидкой</span>
+            </div>
+        </header>
+
+        <div class="search-bar">
+            <input type="text" class="search-input" placeholder="Поиск в Продуктовом Магазине...">
+        </div>
+
+        <div class="container">
+    """
+
+    # Блок рекламы
+    if ads:
+        for title, content in ads:
+            html += f"""
+            <div class="banner">
+                <h2>🔥 {title}</h2>
+                <p>{content}</p>
+            </div>
+            """
+    else:
+        html += """
+        <div class="banner">
+            <h2>🎉 Добро пожаловать!</h2>
+            <p>Самые свежие продукты и выгодные предложения каждый день.</p>
+        </div>
+        """
+
+    # Каталоги (пилюли)
+    if categories:
+        html += '<div class="categories-container">'
+        for cat in categories:
+            html += f'<div class="cat-pill">{cat}</div>'
+        html += '</div>'
+
+    # Товары
+    html += '<h3>Популярные товары</h3><div class="products-grid">'
+    if products:
+        for name, unit, price, discount, cat in products:
+            disc_badge = f'<span class="product-discount">-{discount}</span>' if discount else ''
+            cat_label = f'<div class="product-cat">{cat}</div>' if cat else ''
+            html += f"""
+                <div class="product-card">
+                    <div>
+                        {cat_label}
+                        <div class="product-title">{name}</div>
+                        <div class="product-price">{price} сом{disc_badge}</div>
+                    </div>
+                    <button class="add-btn">В корзину ({unit})</button>
+                </div>
+            """
+    else:
+        html += '<p>В магазине пока нет товаров. Добавьте их через Telegram-бота.</p>'
+
+    html += f"""
+        </div>
+        </div>
+
+        <footer>
+            <div class="footer-content">
+                <div class="footer-col">
+                    <h4>Продуктовый Магазин</h4>
+                    <p>Все свежие продукты прямо к вашей двери. Быстрая доставка и лучшее качество.</p>
+                </div>
+                <div class="footer-col">
+                    <h4>Покупателям</h4>
+                    <a href="#">О нас</a>
+                    <a href="#">Доставка и оплата</a>
+                    <a href="#">Частые вопросы (FAQ)</a>
+                </div>
+                <div class="footer-col">
+                    <h4>Контакты</h4>
+                    <p>📞 +996 (555) 00-00-00</p>
+                    <p>📍 г. Бишкек, Кыргызстан</p>
+                </div>
+            </div>
+            <div class="footer-bottom">
+                © 2026 Продуктовый Магазин. Все права защищены.
+            </div>
+        </footer>
+    </body>
+    </html>
+    """
+
+    return web.Response(text=html, content_type="text/html; charset=utf-8")
 
 async def start_web_server():
     app = web.Application()
-    app.router.add_get('/', handle_ping)
+    app.router.add_get('/', handle_website)
     runner = web.AppRunner(app)
     await runner.setup()
     port = int(os.environ.get("PORT", 10000))
