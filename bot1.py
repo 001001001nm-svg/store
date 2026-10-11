@@ -8,11 +8,11 @@ from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
 
-# Твой реальный токен бота
-BOT_TOKEN = "8891087735:AAEv55LG3oQwkEJMN_LBUnEgM-ZMq7qwPf4"
+# Новый токен бота
+BOT_TOKEN = "8963845436:AAHUvJIEGZhN-H9M3UxB19Pvka37Sy5LsfY"
 
-# Укажи свой Telegram ID, чтобы ты мог назначать админов (можешь заменить на свой числовой ID)
-SUPER_ADMIN_ID = 0  # Сюда можно вписать твой ID, если нужно
+# Укажи свой Telegram ID, чтобы ты мог назначать админов (0 — если хочешь сделать команду доступной всем до настройки)
+SUPER_ADMIN_ID = 0  
 
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher(storage=MemoryStorage())
@@ -101,7 +101,6 @@ async def process_name(message: types.Message, state: FSMContext):
 # Команда для назначения админов: /makeadmin ID
 @dp.message(Command("makeadmin"))
 async def cmd_make_admin(message: types.Message):
-    # Если SUPER_ADMIN_ID не задан (0), то любой пользователь с этой командой сможет выдать админку (или можешь прописать свой ID)
     if SUPER_ADMIN_ID != 0 and message.from_user.id != SUPER_ADMIN_ID:
         return
     
