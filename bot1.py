@@ -669,27 +669,30 @@ async def back_to_main(message: types.Message):
     kb = main_menu_kb(is_owner, is_admin)
     await message.answer("Главное меню:", reply_markup=kb)
 
-# --- КРАСИВЫЙ САЙТ В ЗЕЛЕНОМ СТИЛЕ ---
+# --- БЕЗОПАСНЫЙ САЙТ В ЗЕЛЕНОМ СТИЛЕ ---
 async def handle_website(request):
     global SITE_ACTIVE
     if not SITE_ACTIVE:
         return web.Response(text="🛠 Сайт временно отключен владельцем.", status=503, content_type="text/plain; charset=utf-8")
 
-    conn = sqlite3.connect("store.db")
-    cur = conn.cursor()
-    
-    # Реклама
-    cur.execute("SELECT title, content FROM advertisements")
-    ads = cur.fetchall()
-    
-    # Каталоги
-    cur.execute("SELECT name FROM categories")
-    categories = [row[0] for row in cur.fetchall()]
-    
-    # Товары
-    cur.execute("SELECT name, unit, price, discount, category FROM products")
-    products = cur.fetchall()
-    conn.close()
+    try:
+        conn = sqlite3.connect("store.db")
+        cur = conn.cursor()
+        
+        # Реклама
+        cur.execute("SELECT title, content FROM advertisements")
+        ads = cur.fetchall()
+        
+        # Каталоги
+        cur.execute("SELECT name FROM categories")
+        categories = [row[0] for row in cur.fetchall()]
+        
+        # Товары
+        cur.execute("SELECT name, unit, price, discount, category FROM products")
+        products = cur.fetchall()
+        conn.close()
+    except Exception as e:
+        return web.Response(text=f"Database error: {str(e)}", status=500)
 
     html = f"""
     <!DOCTYPE html>
@@ -704,25 +707,20 @@ async def handle_website(request):
             .logo {{ font-size: 24px; font-weight: bold; }}
             .nav-links {{ display: flex; gap: 20px; font-size: 14px; }}
             .nav-links span {{ cursor: pointer; opacity: 0.9; }}
-            .nav-links span:hover {{ opacity: 1; text-decoration: underline; }}
             .search-bar {{ background: #fff; padding: 15px 30px; display: flex; justify-content: center; box-shadow: 0 2px 4px rgba(0,0,0,0.05); }}
             .search-input {{ width: 100%; max-width: 600px; padding: 12px 20px; border-radius: 25px; border: 1px solid #ddd; outline: none; font-size: 16px; background: #f8f9fa; }}
             .container {{ max-width: 1200px; margin: 20px auto; padding: 0 20px; }}
             
-            /* Слайдер рекламы */
             .banner {{ background: linear-gradient(135deg, #1b5e20, #2e7d32); color: white; border-radius: 12px; padding: 30px; margin-bottom: 30px; box-shadow: 0 4px 12px rgba(0,0,0,0.1); }}
             .banner h2 {{ margin-top: 0; font-size: 24px; }}
             .banner p {{ font-size: 16px; opacity: 0.9; }}
 
-            /* Каталоги */
             .categories-container {{ display: flex; gap: 10px; margin-bottom: 30px; overflow-x: auto; padding-bottom: 5px; }}
             .cat-pill {{ background: #e8f5e9; color: #2e7d32; padding: 8px 18px; border-radius: 20px; font-weight: 600; font-size: 14px; white-space: nowrap; border: 1px solid #c8e6c9; }}
 
-            /* Сетка товаров */
             h3 {{ font-size: 22px; color: #2c3e50; margin-bottom: 15px; }}
             .products-grid {{ display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 20px; margin-bottom: 40px; }}
-            .product-card {{ background: white; border-radius: 12px; padding: 15px; box-shadow: 0 2px 8px rgba(0,0,0,0.05); display: flex; flex-direction: column; justify-content: space-between; transition: transform 0.2s; }}
-            .product-card:hover {{ transform: translateY(-3px); box-shadow: 0 4px 12px rgba(0,0,0,0.1); }}
+            .product-card {{ background: white; border-radius: 12px; padding: 15px; box-shadow: 0 2px 8px rgba(0,0,0,0.05); display: flex; flex-direction: column; justify-content: space-between; }}
             .product-cat {{ font-size: 12px; color: #2e7d32; background: #e8f5e9; padding: 3px 8px; border-radius: 6px; display: inline-block; margin-bottom: 8px; font-weight: 600; }}
             .product-title {{ font-size: 16px; font-weight: bold; margin-bottom: 8px; color: #2c3e50; }}
             .product-price {{ font-size: 18px; color: #2e7d32; font-weight: bold; margin-bottom: 10px; }}
@@ -730,7 +728,6 @@ async def handle_website(request):
             .add-btn {{ background: #2e7d32; color: white; border: none; padding: 8px; border-radius: 8px; cursor: pointer; font-weight: bold; width: 100%; }}
             .add-btn:hover {{ background: #1b5e20; }}
 
-            /* Футер */
             footer {{ background: #1e7e34; color: white; padding: 40px 20px; margin-top: 50px; }}
             .footer-content {{ max-width: 1200px; margin: 0 auto; display: flex; justify-content: space-between; flex-wrap: wrap; gap: 30px; }}
             .footer-col h4 {{ margin-top: 0; margin-bottom: 15px; font-size: 16px; }}
@@ -755,7 +752,6 @@ async def handle_website(request):
         <div class="container">
     """
 
-    # Блок рекламы
     if ads:
         for title, content in ads:
             html += f"""
@@ -772,14 +768,12 @@ async def handle_website(request):
         </div>
         """
 
-    # Каталоги (пилюли)
     if categories:
         html += '<div class="categories-container">'
         for cat in categories:
             html += f'<div class="cat-pill">{cat}</div>'
         html += '</div>'
 
-    # Товары
     html += '<h3>Популярные товары</h3><div class="products-grid">'
     if products:
         for name, unit, price, discount, cat in products:
