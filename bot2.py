@@ -12,33 +12,35 @@ import requests
 from tavily import TavilyClient
 
 # ==========================================
-# 1. МИНИ ВЕБ-СЕРВЕР ДЛЯ RENDER
+# 1. ПОЛНОЦЕННЫЙ ВЕБ-СЕРВЕР ДЛЯ RENDER (Удержание статуса UP)
 # ==========================================
 class SimpleHTTPRequestHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200)
+        self.send_header("Content-type", "text/html; charset=utf-8")
         self.end_headers()
-        self.wfile.write(b"OK")
+        self.wfile.write(b"<html><body><h1>MyProfi KG Bot is Active & Running!</h1></body></html>")
 
     def do_HEAD(self):
         self.send_response(200)
+        self.end_headers()
 
 def run_web_server():
     port = int(os.environ.get("PORT", 10000))
     try:
         server = HTTPServer(('0.0.0.0', port), SimpleHTTPRequestHandler)
-        print(f"Web server running on port {port}")
+        print(f"Web server successfully started on port {port}")
         server.serve_forever()
     except Exception as e:
         print(f"Web server error: {e}")
 
+# Запускаем веб-сервер в отдельном фоновом потоке, чтобы Render всегда получал код 200 OK
 threading.Thread(target=run_web_server, daemon=True).start()
 
 # ==========================================
 # 2. ИНИЦИАЛИЗАЦИЯ И ХРАНЕНИЕ ДАННЫХ
 # ==========================================
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "8891087735:AAEv55LG3oQwkEJMN_LBUnEgM-ZMq7qwPf4")
-# Вставьте ваш ключ OpenRouter (sk-or-v1-...) в двойные кавычки, если его нет в Environment Variables Render:
 OPENROUTER_KEY = os.environ.get("OPENROUTER_KEY", "")
 UNSPLASH_KEY = os.environ.get("UNSPLASH_ACCESS_KEY", "odaMYOHO8tsFHyGe_Q8-0EZtab_NohgvOYRBEvtIkRE")
 TAVILY_KEY = os.environ.get("TAVILY_API_KEY", "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")
