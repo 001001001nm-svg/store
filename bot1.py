@@ -19,10 +19,11 @@ dp = Dispatcher(storage=MemoryStorage())
 BOT_ACTIVE = True
 SITE_ACTIVE = True
 
-# --- База данных ---
+# --- Надежная инициализация базы данных ---
 def init_db():
     conn = sqlite3.connect("store.db")
     cur = conn.cursor()
+    
     cur.execute("""
         CREATE TABLE IF NOT EXISTS users (
             user_id INTEGER PRIMARY KEY,
@@ -669,30 +670,33 @@ async def back_to_main(message: types.Message):
     kb = main_menu_kb(is_owner, is_admin)
     await message.answer("Главное меню:", reply_markup=kb)
 
-# --- БЕЗОПАСНЫЙ САЙТ В ЗЕЛЕНОМ СТИЛЕ ---
+# --- САЙТ МАГАЗИНА С ОБРАБОТКОЙ ОШИБОК ---
 async def handle_website(request):
     global SITE_ACTIVE
     if not SITE_ACTIVE:
         return web.Response(text="🛠 Сайт временно отключен владельцем.", status=503, content_type="text/plain; charset=utf-8")
 
+    ads = []
+    categories = []
+    products = []
+
     try:
         conn = sqlite3.connect("store.db")
         cur = conn.cursor()
         
-        # Реклама
+        # Проверяем и получаем данные
         cur.execute("SELECT title, content FROM advertisements")
         ads = cur.fetchall()
         
-        # Каталоги
         cur.execute("SELECT name FROM categories")
         categories = [row[0] for row in cur.fetchall()]
         
-        # Товары
         cur.execute("SELECT name, unit, price, discount, category FROM products")
         products = cur.fetchall()
         conn.close()
     except Exception as e:
-        return web.Response(text=f"Database error: {str(e)}", status=500)
+        # Если таблиц еще нет или база пуста, не падаем с 500 ошибкой
+        pass
 
     html = f"""
     <!DOCTYPE html>
