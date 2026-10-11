@@ -19,11 +19,10 @@ dp = Dispatcher(storage=MemoryStorage())
 BOT_ACTIVE = True
 SITE_ACTIVE = True
 
-# --- Надежная инициализация базы данных ---
+# --- Инициализация БД ---
 def init_db():
     conn = sqlite3.connect("store.db")
     cur = conn.cursor()
-    
     cur.execute("""
         CREATE TABLE IF NOT EXISTS users (
             user_id INTEGER PRIMARY KEY,
@@ -670,7 +669,7 @@ async def back_to_main(message: types.Message):
     kb = main_menu_kb(is_owner, is_admin)
     await message.answer("Главное меню:", reply_markup=kb)
 
-# --- САЙТ МАГАЗИНА С ОБРАБОТКОЙ ОШИБОК ---
+# --- СТАБИЛЬНЫЙ И БЕЗОПАСНЫЙ САЙТ ---
 async def handle_website(request):
     global SITE_ACTIVE
     if not SITE_ACTIVE:
@@ -681,10 +680,9 @@ async def handle_website(request):
     products = []
 
     try:
-        conn = sqlite3.connect("store.db")
+        conn = sqlite3.connect("store.db", timeout=10.0)
         cur = conn.cursor()
         
-        # Проверяем и получаем данные
         cur.execute("SELECT title, content FROM advertisements")
         ads = cur.fetchall()
         
@@ -695,7 +693,7 @@ async def handle_website(request):
         products = cur.fetchall()
         conn.close()
     except Exception as e:
-        # Если таблиц еще нет или база пуста, не падаем с 500 ошибкой
+        # Если возникла любая ошибка с БД, отдаем простую рабочую страницу вместо падения
         pass
 
     html = f"""
