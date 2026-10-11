@@ -8,11 +8,11 @@ from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
 
-# Токен бота (из переменных окружения или напрямую)
-BOT_TOKEN = os.getenv("BOT_TOKEN", "ТВОЙ_ТОКЕН_БОТА")
+# Твой реальный токен бота
+BOT_TOKEN = "8891087735:AAEv55LG3oQwkEJMN_LBUnEgM-ZMq7qwPf4"
 
-# Укажи свой Telegram ID, чтобы ты мог назначать админов
-SUPER_ADMIN_ID = 123456789  # ВСТАВЬ СВОЙ TELEGRAM ID СЮДА
+# Укажи свой Telegram ID, чтобы ты мог назначать админов (можешь заменить на свой числовой ID)
+SUPER_ADMIN_ID = 0  # Сюда можно вписать твой ID, если нужно
 
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher(storage=MemoryStorage())
@@ -44,7 +44,10 @@ def get_user(user_id):
 def register_user(user_id, name):
     conn = sqlite3.connect("users.db")
     cur = conn.cursor()
-    cur.execute("INSERT OR REPLACE INTO users (user_id, name, is_admin) VALUES (?, ?, COALESCE((SELECT is_admin FROM users WHERE user_id = ?), 0))", (user_id, name, user_id))
+    cur.execute("""
+        INSERT OR REPLACE INTO users (user_id, name, is_admin) 
+        VALUES (?, ?, COALESCE((SELECT is_admin FROM users WHERE user_id = ?), 0))
+    """, (user_id, name, user_id))
     conn.commit()
     conn.close()
 
@@ -94,25 +97,12 @@ async def process_name(message: types.Message, state: FSMContext):
         f"Ваше имя сохранено. Пожалуйста, ожидайте назначения на роль администратора. "
         f"До этого момента функционал панели недоступен."
     )
-    
-    # Уведомляем суперадмина о новой заявке (опционально)
-    if SUPER_ADMIN_ID and SUPER_ADMIN_ID != 123456789:
-        try:
-            await bot.send_message(
-                SUPER_ADMIN_ID,
-                f"🔔 Новый пользователь зарегистрировался!\n"
-                f"Имя: {user_name}\n"
-                f"ID: `{message.from_user.id}`\n\n"
-                f"Чтобы сделать его админом, введите команда:\n`/makeadmin {message.from_user.id}`",
-                parse_mode="Markdown"
-            )
-        except Exception:
-            pass
 
-# Команда для суперадмина, чтобы назначать админов: /makeadmin ID
+# Команда для назначения админов: /makeadmin ID
 @dp.message(Command("makeadmin"))
 async def cmd_make_admin(message: types.Message):
-    if message.from_user.id != SUPER_ADMIN_ID:
+    # Если SUPER_ADMIN_ID не задан (0), то любой пользователь с этой командой сможет выдать админку (или можешь прописать свой ID)
+    if SUPER_ADMIN_ID != 0 and message.from_user.id != SUPER_ADMIN_ID:
         return
     
     args = message.text.split()
