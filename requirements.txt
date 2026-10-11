@@ -1,3 +1,4 @@
 pyTelegramBotAPI
 requests
 tavily-python
+aiogram
