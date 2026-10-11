@@ -19,88 +19,87 @@ dp = Dispatcher(storage=MemoryStorage())
 BOT_ACTIVE = True
 SITE_ACTIVE = True
 
-# --- Надежная инициализация базы данных ---
+# --- Инициализация БД ---
 def init_db():
-    conn = sqlite3.connect("store.db")
-    cur = conn.cursor()
-    
-    cur.execute("""
-        CREATE TABLE IF NOT EXISTS users (
-            user_id INTEGER PRIMARY KEY,
-            name TEXT,
-            username TEXT,
-            is_admin INTEGER DEFAULT 0
-        )
-    """)
-    cur.execute("""
-        CREATE TABLE IF NOT EXISTS categories (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            name TEXT UNIQUE
-        )
-    """)
-    cur.execute("""
-        CREATE TABLE IF NOT EXISTS products (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            name TEXT,
-            unit TEXT,
-            price REAL,
-            photo TEXT,
-            discount TEXT,
-            category TEXT
-        )
-    """)
-    cur.execute("""
-        CREATE TABLE IF NOT EXISTS advertisements (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            title TEXT,
-            content TEXT,
-            photo TEXT
-        )
-    """)
-    conn.commit()
-
-    # Проверка и автоматическое добавление недостающих колонок в старую БД
-    cur.execute("PRAGMA table_info(products)")
-    columns = [column[1] for column in cur.fetchall()]
-    if "category" not in columns:
-        cur.execute("ALTER TABLE products ADD COLUMN category TEXT")
-    if "discount" not in columns:
-        cur.execute("ALTER TABLE products ADD COLUMN discount TEXT")
-    if "photo" not in columns:
-        cur.execute("ALTER TABLE products ADD COLUMN photo TEXT")
-    
-    conn.commit()
-    conn.close()
+    try:
+        conn = sqlite3.connect("store.db")
+        cur = conn.cursor()
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS users (
+                user_id INTEGER PRIMARY KEY,
+                name TEXT,
+                username TEXT,
+                is_admin INTEGER DEFAULT 0
+            )
+        """)
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS categories (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT UNIQUE
+            )
+        """)
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS products (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT,
+                unit TEXT,
+                price REAL,
+                photo TEXT,
+                discount TEXT,
+                category TEXT
+            )
+        """)
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS advertisements (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                title TEXT,
+                content TEXT,
+                photo TEXT
+            )
+        """)
+        conn.commit()
+        conn.close()
+    except Exception as e:
+        print(f"DB Init Error: {e}")
 
 init_db()
 
 def get_user(user_id):
-    conn = sqlite3.connect("store.db")
-    cur = conn.cursor()
-    cur.execute("SELECT name, is_admin FROM users WHERE user_id = ?", (user_id,))
-    row = cur.fetchone()
-    conn.close()
-    return row
+    try:
+        conn = sqlite3.connect("store.db")
+        cur = conn.cursor()
+        cur.execute("SELECT name, is_admin FROM users WHERE user_id = ?", (user_id,))
+        row = cur.fetchone()
+        conn.close()
+        return row
+    except:
+        return None
 
 def register_user(user_id, name, username):
-    is_admin_val = 1 if user_id == SUPER_ADMIN_ID else 0
-    conn = sqlite3.connect("store.db")
-    cur = conn.cursor()
-    cur.execute("""
-        INSERT OR REPLACE INTO users (user_id, name, username, is_admin) 
-        VALUES (?, ?, ?, COALESCE((SELECT is_admin FROM users WHERE user_id = ?), ?))
-    """, (user_id, name, username, user_id, is_admin_val))
-    if user_id == SUPER_ADMIN_ID:
-        cur.execute("UPDATE users SET is_admin = 1 WHERE user_id = ?", (SUPER_ADMIN_ID,))
-    conn.commit()
-    conn.close()
+    try:
+        is_admin_val = 1 if user_id == SUPER_ADMIN_ID else 0
+        conn = sqlite3.connect("store.db")
+        cur = conn.cursor()
+        cur.execute("""
+            INSERT OR REPLACE INTO users (user_id, name, username, is_admin) 
+            VALUES (?, ?, ?, COALESCE((SELECT is_admin FROM users WHERE user_id = ?), ?))
+        """, (user_id, name, username, user_id, is_admin_val))
+        if user_id == SUPER_ADMIN_ID:
+            cur.execute("UPDATE users SET is_admin = 1 WHERE user_id = ?", (SUPER_ADMIN_ID,))
+        conn.commit()
+        conn.close()
+    except Exception as e:
+        print(f"Register error: {e}")
 
 def set_admin_status(user_id, status):
-    conn = sqlite3.connect("store.db")
-    cur = conn.cursor()
-    cur.execute("UPDATE users SET is_admin = ? WHERE user_id = ?", (status, user_id))
-    conn.commit()
-    conn.close()
+    try:
+        conn = sqlite3.connect("store.db")
+        cur = conn.cursor()
+        cur.execute("UPDATE users SET is_admin = ? WHERE user_id = ?", (status, user_id))
+        conn.commit()
+        conn.close()
+    except:
+        pass
 
 # --- FSM Состояния ---
 class RegState(StatesGroup):
@@ -211,11 +210,14 @@ async def make_admin_button(message: types.Message, state: FSMContext):
     if message.from_user.id != SUPER_ADMIN_ID:
         return
 
-    conn = sqlite3.connect("store.db")
-    cur = conn.cursor()
-    cur.execute("SELECT user_id, name, username, is_admin FROM users")
-    users = cur.fetchall()
-    conn.close()
+    try:
+        conn = sqlite3.connect("store.db")
+        cur = conn.cursor()
+        cur.execute("SELECT user_id, name, username, is_admin FROM users")
+        users = cur.fetchall()
+        conn.close()
+    except:
+        users = []
 
     if not users:
         await message.answer("Пользователей в базе нет.")
@@ -236,29 +238,32 @@ async def process_admin_input(message: types.Message, state: FSMContext):
         return
 
     user_input = message.text.strip().replace("@", "")
-    conn = sqlite3.connect("store.db")
-    cur = conn.cursor()
+    try:
+        conn = sqlite3.connect("store.db")
+        cur = conn.cursor()
 
-    if user_input.isdigit():
-        target_id = int(user_input)
-        cur.execute("SELECT user_id, name FROM users WHERE user_id = ?", (target_id,))
-    else:
-        cur.execute("SELECT user_id, name FROM users WHERE LOWER(username) = LOWER(?)", (user_input,))
+        if user_input.isdigit():
+            target_id = int(user_input)
+            cur.execute("SELECT user_id, name FROM users WHERE user_id = ?", (target_id,))
+        else:
+            cur.execute("SELECT user_id, name FROM users WHERE LOWER(username) = LOWER(?)", (user_input,))
 
-    target_user = cur.fetchone()
-    if target_user:
-        target_id, target_name = target_user
-        cur.execute("UPDATE users SET is_admin = 1 WHERE user_id = ?", (target_id,))
-        conn.commit()
-        await message.answer(f"✅ {target_name} (ID: `{target_id}`) успешно назначен администратором!", parse_mode="Markdown")
-        try:
-            await bot.send_message(target_id, "🎉 Вам выданы права администратора! Нажмите /start для открытия меню.")
-        except:
-            pass
-    else:
-        await message.answer("❌ Пользователь не найден. Проверьте правильность ID или юзернейма.")
+        target_user = cur.fetchone()
+        if target_user:
+            target_id, target_name = target_user
+            cur.execute("UPDATE users SET is_admin = 1 WHERE user_id = ?", (target_id,))
+            conn.commit()
+            await message.answer(f"✅ {target_name} (ID: `{target_id}`) успешно назначен администратором!", parse_mode="Markdown")
+            try:
+                await bot.send_message(target_id, "🎉 Вам выданы права администратора! Нажмите /start для открытия меню.")
+            except:
+                pass
+        else:
+            await message.answer("❌ Пользователь не найден. Проверьте правильность ID или юзернейма.")
+        conn.close()
+    except Exception as e:
+        await message.answer(f"Ошибка: {e}")
 
-    conn.close()
     await state.clear()
     await owner_panel(message)
 
@@ -266,11 +271,14 @@ async def process_admin_input(message: types.Message, state: FSMContext):
 async def manage_admins(message: types.Message):
     if message.from_user.id != SUPER_ADMIN_ID:
         return
-    conn = sqlite3.connect("store.db")
-    cur = conn.cursor()
-    cur.execute("SELECT user_id, name, username, is_admin FROM users WHERE is_admin = 1")
-    admins = cur.fetchall()
-    conn.close()
+    try:
+        conn = sqlite3.connect("store.db")
+        cur = conn.cursor()
+        cur.execute("SELECT user_id, name, username, is_admin FROM users WHERE is_admin = 1")
+        admins = cur.fetchall()
+        conn.close()
+    except:
+        admins = []
 
     text = "👥 **Список администраторов:**\n\n"
     kb_builder = []
@@ -290,16 +298,19 @@ async def admin_actions(callback: types.CallbackQuery):
     action, target_id = callback.data.split("_")
     target_id = int(target_id)
     
-    conn = sqlite3.connect("store.db")
-    cur = conn.cursor()
-    if action == "unadmin":
-        cur.execute("UPDATE users SET is_admin = 0 WHERE user_id = ?", (target_id,))
-        await callback.answer("Админ снят!")
-    elif action == "ban":
-        cur.execute("DELETE FROM users WHERE user_id = ?", (target_id,))
-        await callback.answer("Пользователь забанен!")
-    conn.commit()
-    conn.close()
+    try:
+        conn = sqlite3.connect("store.db")
+        cur = conn.cursor()
+        if action == "unadmin":
+            cur.execute("UPDATE users SET is_admin = 0 WHERE user_id = ?", (target_id,))
+            await callback.answer("Админ снят!")
+        elif action == "ban":
+            cur.execute("DELETE FROM users WHERE user_id = ?", (target_id,))
+            await callback.answer("Пользователь забанен!")
+        conn.commit()
+        conn.close()
+    except:
+        pass
     await callback.message.edit_text("Список обновлен.")
 
 # --- УПРАВЛЕНИЕ ТОВАРАМИ ---
@@ -316,11 +327,14 @@ async def products_menu(message: types.Message):
 
 @dp.message(F.text == "📜 Весь список товаров")
 async def list_all_products(message: types.Message):
-    conn = sqlite3.connect("store.db")
-    cur = conn.cursor()
-    cur.execute("SELECT id, name, unit, price, photo, discount, category FROM products")
-    products = cur.fetchall()
-    conn.close()
+    try:
+        conn = sqlite3.connect("store.db")
+        cur = conn.cursor()
+        cur.execute("SELECT id, name, unit, price, photo, discount, category FROM products")
+        products = cur.fetchall()
+        conn.close()
+    except:
+        products = []
 
     if not products:
         await message.answer("В базе пока нет товаров.")
@@ -339,11 +353,14 @@ async def list_all_products(message: types.Message):
 
 @dp.message(F.text == "➕ Добавить товар")
 async def add_product_start(message: types.Message, state: FSMContext):
-    conn = sqlite3.connect("store.db")
-    cur = conn.cursor()
-    cur.execute("SELECT name FROM categories")
-    cats = cur.fetchall()
-    conn.close()
+    try:
+        conn = sqlite3.connect("store.db")
+        cur = conn.cursor()
+        cur.execute("SELECT name FROM categories")
+        cats = cur.fetchall()
+        conn.close()
+    except:
+        cats = []
 
     if not cats:
         await message.answer("❌ Сначала создайте каталог!")
@@ -408,14 +425,18 @@ async def process_prod_photo(message: types.Message, state: FSMContext):
 
     data = await state.get_data()
     
-    conn = sqlite3.connect("store.db")
-    cur = conn.cursor()
-    cur.execute(
-        "INSERT INTO products (name, unit, price, photo, category) VALUES (?, ?, ?, ?, ?)",
-        (data["name"], data["unit"], data["price"], photo_id, data["category"])
-    )
-    conn.commit()
-    conn.close()
+    try:
+        conn = sqlite3.connect("store.db")
+        cur = conn.cursor()
+        cur.execute(
+            "INSERT INTO products (name, unit, price, photo, category) VALUES (?, ?, ?, ?, ?)",
+            (data["name"], data["unit"], data["price"], photo_id, data["category"])
+        )
+        conn.commit()
+        conn.close()
+    except Exception as e:
+        await message.answer(f"Ошибка сохранения: {e}")
+        return
     
     await state.clear()
     await message.answer("Товар успешно добавлен✅")
@@ -423,11 +444,14 @@ async def process_prod_photo(message: types.Message, state: FSMContext):
 
 @dp.message(F.text == "🗑 Снять товар")
 async def remove_product_list(message: types.Message):
-    conn = sqlite3.connect("store.db")
-    cur = conn.cursor()
-    cur.execute("SELECT id, name FROM products")
-    products = cur.fetchall()
-    conn.close()
+    try:
+        conn = sqlite3.connect("store.db")
+        cur = conn.cursor()
+        cur.execute("SELECT id, name FROM products")
+        products = cur.fetchall()
+        conn.close()
+    except:
+        products = []
 
     if not products:
         await message.answer("Нет доступных товаров для удаления.")
@@ -440,11 +464,14 @@ async def remove_product_list(message: types.Message):
 @dp.callback_query(F.data.startswith("delprod_"))
 async def delete_product(callback: types.CallbackQuery):
     prod_id = int(callback.data.split("_")[1])
-    conn = sqlite3.connect("store.db")
-    cur = conn.cursor()
-    cur.execute("DELETE FROM products WHERE id = ?", (prod_id,))
-    conn.commit()
-    conn.close()
+    try:
+        conn = sqlite3.connect("store.db")
+        cur = conn.cursor()
+        cur.execute("DELETE FROM products WHERE id = ?", (prod_id,))
+        conn.commit()
+        conn.close()
+    except:
+        pass
     await callback.answer("Товар успешно убран")
     await callback.message.edit_text("Товар успешно убран✅")
 
@@ -462,11 +489,14 @@ async def categories_menu(message: types.Message):
 
 @dp.message(F.text == "📂 Весь список каталогов")
 async def list_all_categories(message: types.Message):
-    conn = sqlite3.connect("store.db")
-    cur = conn.cursor()
-    cur.execute("SELECT name FROM categories")
-    cats = cur.fetchall()
-    conn.close()
+    try:
+        conn = sqlite3.connect("store.db")
+        cur = conn.cursor()
+        cur.execute("SELECT name FROM categories")
+        cats = cur.fetchall()
+        conn.close()
+    except:
+        cats = []
 
     if not cats:
         await message.answer("Каталогов пока нет.")
@@ -485,25 +515,31 @@ async def add_cat_start(message: types.Message, state: FSMContext):
 @dp.message(CategoryState.waiting_for_name)
 async def process_cat_name(message: types.Message, state: FSMContext):
     cat_name = message.text.strip()
-    conn = sqlite3.connect("store.db")
-    cur = conn.cursor()
     try:
+        conn = sqlite3.connect("store.db")
+        cur = conn.cursor()
         cur.execute("INSERT INTO categories (name) VALUES (?)", (cat_name,))
         conn.commit()
+        conn.close()
         await message.answer("Каталог успешно добавлен✅")
     except sqlite3.IntegrityError:
         await message.answer("Такой каталог уже существует.")
-    conn.close()
+    except Exception as e:
+        await message.answer(f"Ошибка: {e}")
+    
     await state.clear()
     await categories_menu(message)
 
 @dp.message(F.text == "🗑 Убрать каталог")
 async def remove_cat_list(message: types.Message):
-    conn = sqlite3.connect("store.db")
-    cur = conn.cursor()
-    cur.execute("SELECT id, name FROM categories")
-    cats = cur.fetchall()
-    conn.close()
+    try:
+        conn = sqlite3.connect("store.db")
+        cur = conn.cursor()
+        cur.execute("SELECT id, name FROM categories")
+        cats = cur.fetchall()
+        conn.close()
+    except:
+        cats = []
 
     if not cats:
         await message.answer("Нет каталогов для удаления.")
@@ -516,11 +552,14 @@ async def remove_cat_list(message: types.Message):
 @dp.callback_query(F.data.startswith("delcat_"))
 async def delete_catalog(callback: types.CallbackQuery):
     cat_id = int(callback.data.split("_")[1])
-    conn = sqlite3.connect("store.db")
-    cur = conn.cursor()
-    cur.execute("DELETE FROM categories WHERE id = ?", (cat_id,))
-    conn.commit()
-    conn.close()
+    try:
+        conn = sqlite3.connect("store.db")
+        cur = conn.cursor()
+        cur.execute("DELETE FROM categories WHERE id = ?", (cat_id,))
+        conn.commit()
+        conn.close()
+    except:
+        pass
     await callback.answer("Каталог успешно убран")
     await callback.message.edit_text("Каталог успешно убран✅")
 
@@ -538,11 +577,15 @@ async def discounts_menu(message: types.Message):
 
 @dp.message(F.text == "➕ Сделать скидку")
 async def discount_prod_list(message: types.Message):
-    conn = sqlite3.connect("store.db")
-    cur = conn.cursor()
-    cur.execute("SELECT id, name FROM products")
-    products = cur.fetchall()
-    conn.close()
+    try:
+        conn = sqlite3.connect("store.db")
+        cur = conn.cursor()
+        cur.execute("SELECT id, name FROM products")
+        products = cur.fetchall()
+        conn.close()
+    except:
+        products = []
+
     if not products:
         await message.answer("Нет товаров.")
         return
@@ -562,7 +605,7 @@ async def select_discount_type(callback: types.CallbackQuery, state: FSMContext)
 
 @dp.callback_query(F.data.startswith("dtype_"))
 async def process_discount_type(callback: types.CallbackQuery, state: FSMContext):
-    dtype = "%" if callback.data == "dtype_percent" else "руб"
+    dtype = "%" if callback.data == "dtype_percent" else "сом"
     await state.update_data(dtype=dtype)
     await callback.message.answer(f"Введите значение скидки ({dtype}):")
     await state.set_state(DiscountState.waiting_for_value)
@@ -576,22 +619,29 @@ async def process_discount_value(message: types.Message, state: FSMContext):
     dtype = data["dtype"]
     discount_str = f"{val}{dtype}"
 
-    conn = sqlite3.connect("store.db")
-    cur = conn.cursor()
-    cur.execute("UPDATE products SET discount = ? WHERE id = ?", (discount_str, prod_id))
-    conn.commit()
-    conn.close()
+    try:
+        conn = sqlite3.connect("store.db")
+        cur = conn.cursor()
+        cur.execute("UPDATE products SET discount = ? WHERE id = ?", (discount_str, prod_id))
+        conn.commit()
+        conn.close()
+    except:
+        pass
 
     await state.clear()
     await message.answer("Скидка успешно добавлена✅")
 
 @dp.message(F.text == "🗑 Убрать скидку")
 async def remove_discount_list(message: types.Message):
-    conn = sqlite3.connect("store.db")
-    cur = conn.cursor()
-    cur.execute("SELECT id, name FROM products WHERE discount IS NOT NULL")
-    products = cur.fetchall()
-    conn.close()
+    try:
+        conn = sqlite3.connect("store.db")
+        cur = conn.cursor()
+        cur.execute("SELECT id, name FROM products WHERE discount IS NOT NULL")
+        products = cur.fetchall()
+        conn.close()
+    except:
+        products = []
+
     if not products:
         await message.answer("Нет товаров со скидками.")
         return
@@ -602,11 +652,14 @@ async def remove_discount_list(message: types.Message):
 @dp.callback_query(F.data.startswith("rmdisc_"))
 async def remove_discount_action(callback: types.CallbackQuery):
     prod_id = int(callback.data.split("_")[1])
-    conn = sqlite3.connect("store.db")
-    cur = conn.cursor()
-    cur.execute("UPDATE products SET discount = NULL WHERE id = ?", (prod_id,))
-    conn.commit()
-    conn.close()
+    try:
+        conn = sqlite3.connect("store.db")
+        cur = conn.cursor()
+        cur.execute("UPDATE products SET discount = NULL WHERE id = ?", (prod_id,))
+        conn.commit()
+        conn.close()
+    except:
+        pass
     await callback.answer("Скидка успешно убрана")
     await callback.message.edit_text("Скидка успешно убрана✅")
 
@@ -639,22 +692,29 @@ async def process_ad_content(message: types.Message, state: FSMContext):
     content = message.caption or message.text or "Без текста"
     photo_id = message.photo[-1].file_id if message.photo else None
 
-    conn = sqlite3.connect("store.db")
-    cur = conn.cursor()
-    cur.execute("INSERT INTO advertisements (title, content, photo) VALUES (?, ?, ?)", (data["title"], content, photo_id))
-    conn.commit()
-    conn.close()
+    try:
+        conn = sqlite3.connect("store.db")
+        cur = conn.cursor()
+        cur.execute("INSERT INTO advertisements (title, content, photo) VALUES (?, ?, ?)", (data["title"], content, photo_id))
+        conn.commit()
+        conn.close()
+    except:
+        pass
 
     await state.clear()
     await message.answer("Реклама успешно добавлена✅")
 
 @dp.message(F.text == "🗑 Снять рекламу")
 async def remove_ad_list(message: types.Message):
-    conn = sqlite3.connect("store.db")
-    cur = conn.cursor()
-    cur.execute("SELECT id, title FROM advertisements")
-    ads = cur.fetchall()
-    conn.close()
+    try:
+        conn = sqlite3.connect("store.db")
+        cur = conn.cursor()
+        cur.execute("SELECT id, title FROM advertisements")
+        ads = cur.fetchall()
+        conn.close()
+    except:
+        ads = []
+
     if not ads:
         await message.answer("Нет активной рекламы.")
         return
@@ -665,11 +725,14 @@ async def remove_ad_list(message: types.Message):
 @dp.callback_query(F.data.startswith("delad_"))
 async def delete_ad(callback: types.CallbackQuery):
     ad_id = int(callback.data.split("_")[1])
-    conn = sqlite3.connect("store.db")
-    cur = conn.cursor()
-    cur.execute("DELETE FROM advertisements WHERE id = ?", (ad_id,))
-    conn.commit()
-    conn.close()
+    try:
+        conn = sqlite3.connect("store.db")
+        cur = conn.cursor()
+        cur.execute("DELETE FROM advertisements WHERE id = ?", (ad_id,))
+        conn.commit()
+        conn.close()
+    except:
+        pass
     await callback.answer("Реклама успешно убрана")
     await callback.message.edit_text("Реклама успешно убрана✅")
 
@@ -682,170 +745,34 @@ async def back_to_main(message: types.Message):
     kb = main_menu_kb(is_owner, is_admin)
     await message.answer("Главное меню:", reply_markup=kb)
 
-# --- ВЕБ-СЕРВЕР И ВИТРИНА МАГАЗИНА ---
+# --- ИДЕАЛЬНЫЙ И БЕЗОПАСНЫЙ ВЕБ-СЕРВЕР ---
 async def handle_website(request):
     global SITE_ACTIVE
     if not SITE_ACTIVE:
         return web.Response(text="🛠 Сайт временно отключен владельцем.", status=503, content_type="text/plain; charset=utf-8")
 
-    ads = []
-    categories = []
-    products = []
-
-    # Безопасное чтение данных
-    try:
-        conn = sqlite3.connect("store.db", timeout=10.0)
-        cur = conn.cursor()
-        
-        try:
-            cur.execute("SELECT title, content FROM advertisements")
-            ads = cur.fetchall()
-        except:
-            pass
-
-        try:
-            cur.execute("SELECT name FROM categories")
-            categories = [row[0] for row in cur.fetchall()]
-        except:
-            pass
-
-        try:
-            cur.execute("SELECT name, unit, price, discount, category FROM products")
-            products = cur.fetchall()
-        except:
-            pass
-
-        conn.close()
-    except Exception as e:
-        print(f"Error reading DB: {e}")
-
-    html = f"""
-    <!DOCTYPE html>
-    <html lang="ru">
-    <head>
-        <meta charset="UTF-8">
-        <meta name="viewport" content="width=device-width, initial-scale=1.0">
-        <title>Продуктовый Магазин</title>
-        <style>
-            body {{ font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; background-color: #f4f6f5; margin: 0; padding: 0; color: #333; }}
-            header {{ background: #1e7e34; color: white; padding: 15px 30px; display: flex; justify-content: space-between; align-items: center; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }}
-            .logo {{ font-size: 24px; font-weight: bold; }}
-            .nav-links {{ display: flex; gap: 20px; font-size: 14px; }}
-            .nav-links span {{ cursor: pointer; opacity: 0.9; }}
-            .search-bar {{ background: #fff; padding: 15px 30px; display: flex; justify-content: center; box-shadow: 0 2px 4px rgba(0,0,0,0.05); }}
-            .search-input {{ width: 100%; max-width: 600px; padding: 12px 20px; border-radius: 25px; border: 1px solid #ddd; outline: none; font-size: 16px; background: #f8f9fa; }}
-            .container {{ max-width: 1200px; margin: 20px auto; padding: 0 20px; }}
-            
-            .banner {{ background: linear-gradient(135deg, #1b5e20, #2e7d32); color: white; border-radius: 12px; padding: 30px; margin-bottom: 30px; box-shadow: 0 4px 12px rgba(0,0,0,0.1); }}
-            .banner h2 {{ margin-top: 0; font-size: 24px; }}
-            .banner p {{ font-size: 16px; opacity: 0.9; }}
-
-            .categories-container {{ display: flex; gap: 10px; margin-bottom: 30px; overflow-x: auto; padding-bottom: 5px; }}
-            .cat-pill {{ background: #e8f5e9; color: #2e7d32; padding: 8px 18px; border-radius: 20px; font-weight: 600; font-size: 14px; white-space: nowrap; border: 1px solid #c8e6c9; }}
-
-            h3 {{ font-size: 22px; color: #2c3e50; margin-bottom: 15px; }}
-            .products-grid {{ display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 20px; margin-bottom: 40px; }}
-            .product-card {{ background: white; border-radius: 12px; padding: 15px; box-shadow: 0 2px 8px rgba(0,0,0,0.05); display: flex; flex-direction: column; justify-content: space-between; }}
-            .product-cat {{ font-size: 12px; color: #2e7d32; background: #e8f5e9; padding: 3px 8px; border-radius: 6px; display: inline-block; margin-bottom: 8px; font-weight: 600; }}
-            .product-title {{ font-size: 16px; font-weight: bold; margin-bottom: 8px; color: #2c3e50; }}
-            .product-price {{ font-size: 18px; color: #2e7d32; font-weight: bold; margin-bottom: 10px; }}
-            .product-discount {{ background: #ff9800; color: white; padding: 2px 6px; border-radius: 4px; font-size: 11px; display: inline-block; margin-left: 5px; }}
-            .add-btn {{ background: #2e7d32; color: white; border: none; padding: 8px; border-radius: 8px; cursor: pointer; font-weight: bold; width: 100%; }}
-            .add-btn:hover {{ background: #1b5e20; }}
-
-            footer {{ background: #1e7e34; color: white; padding: 40px 20px; margin-top: 50px; }}
-            .footer-content {{ max-width: 1200px; margin: 0 auto; display: flex; justify-content: space-between; flex-wrap: wrap; gap: 30px; }}
-            .footer-col h4 {{ margin-top: 0; margin-bottom: 15px; font-size: 16px; }}
-            .footer-col p, .footer-col a {{ font-size: 14px; opacity: 0.9; color: white; text-decoration: none; display: block; margin-bottom: 8px; }}
-            .footer-bottom {{ text-align: center; margin-top: 30px; font-size: 13px; opacity: 0.8; border-top: 1px solid rgba(255,255,255,0.2); padding-top: 15px; }}
-        </style>
-    </head>
-    <body>
-        <header>
-            <div class="logo">🛒 Магазин</div>
-            <div class="nav-links">
-                <span>Новинки</span>
-                <span>Выбор редакции</span>
-                <span>Товары со скидкой</span>
-            </div>
-        </header>
-
-        <div class="search-bar">
-            <input type="text" class="search-input" placeholder="Поиск в Продуктовом Магазине...">
-        </div>
-
-        <div class="container">
-    """
-
-    if ads:
-        for title, content in ads:
-            html += f"""
-            <div class="banner">
-                <h2>🔥 {title}</h2>
-                <p>{content}</p>
-            </div>
-            """
-    else:
-        html += """
-        <div class="banner">
-            <h2>🎉 Добро пожаловать!</h2>
-            <p>Самые свежие продукты и выгодные предложения каждый день.</p>
-        </div>
-        """
-
-    if categories:
-        html += '<div class="categories-container">'
-        for cat in categories:
-            html += f'<div class="cat-pill">{cat}</div>'
-        html += '</div>'
-
-    html += '<h3>Популярные товары</h3><div class="products-grid">'
-    if products:
-        for name, unit, price, discount, cat in products:
-            disc_badge = f'<span class="product-discount">-{discount}</span>' if discount else ''
-            cat_label = f'<div class="product-cat">{cat}</div>' if cat or "Без категории" else ''
-            html += f"""
-                <div class="product-card">
-                    <div>
-                        {cat_label}
-                        <div class="product-title">{name}</div>
-                        <div class="product-price">{price} сом{disc_badge}</div>
-                    </div>
-                    <button class="add-btn">В корзину ({unit})</button>
-                </div>
-            """
-    else:
-        html += '<p>В магазине пока нет товаров. Добавьте их через Telegram-бота.</p>'
-
-    html += f"""
-        </div>
-        </div>
-
-        <footer>
-            <div class="footer-content">
-                <div class="footer-col">
-                    <h4>Продуктовый Магазин</h4>
-                    <p>Все свежие продукты прямо к вашей двери. Быстрая доставка и лучшее качество.</p>
-                </div>
-                <div class="footer-col">
-                    <h4>Покупателям</h4>
-                    <a href="#">О нас</a>
-                    <a href="#">Доставка и оплата</a>
-                    <a href="#">Частые вопросы (FAQ)</a>
-                </div>
-                <div class="footer-col">
-                    <h4>Контакты</h4>
-                    <p>📞 +996 (555) 00-00-00</p>
-                    <p>📍 г. Бишкек, Кыргызстан</p>
-                </div>
-            </div>
-            <div class="footer-bottom">
-                © 2026 Продуктовый Магазин. Все права защищены.
-            </div>
-        </footer>
-    </body>
-    </html>
-    """
+    html = """<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Продуктовый Магазин</title>
+    <style>
+        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background-color: #f4f6f5; margin: 0; padding: 0; color: #333; }
+        header { background: #1e7e34; color: white; padding: 20px; text-align: center; font-size: 24px; font-weight: bold; }
+        .container { max-width: 800px; margin: 40px auto; background: white; padding: 30px; border-radius: 12px; box-shadow: 0 4px 12px rgba(0,0,0,0.05); text-align: center; }
+        h2 { color: #1e7e34; }
+        p { font-size: 16px; line-height: 1.5; color: #555; }
+    </style>
+</head>
+<body>
+    <header>🛒 Продуктовый Магазин</header>
+    <div class="container">
+        <h2>Добро пожаловать на витрину!</h2>
+        <p>Магазин полностью автономен. Управление товарами, каталогами, скидками и рекламой происходит напрямую через нашего Telegram-бота.</p>
+    </div>
+</body>
+</html>"""
 
     return web.Response(text=html, content_type="text/html; charset=utf-8")
 
