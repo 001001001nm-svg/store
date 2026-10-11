@@ -26,8 +26,8 @@ logging.basicConfig(level=logging.INFO)
 BOT_TOKEN = os.environ["BOT_TOKEN"]
 SUPER_ADMIN_ID = int(os.environ.get("SUPER_ADMIN_ID", "8636623905"))
 DB_PATH = os.environ.get("DB_PATH", "store.db")
-DEFAULT_PHONE = "+996 (555) 00-00-00"
-DEFAULT_ADDRESS = "г. Бишкек, Кыргызстан"
+DEFAULT_PHONE = "+7 (999) 206-63-75"
+DEFAULT_ADDRESS = "г. Санкт-Петербург, Россия"
 
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher(storage=MemoryStorage())
