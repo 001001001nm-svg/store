@@ -160,6 +160,77 @@ def insert(sql, params=()):
         return cur.lastrowid
 
 
+def cur() -> str:
+    """Валюта сайта (меняется владельцем в боте)."""
+    return get_text("currency", "₽")
+
+
+# ---------- временные (демо) каталоги и товары ----------
+DEMO_CATEGORIES = ["Напитки", "Сладости", "Снеки", "Кофе и чай",
+                   "Молочные продукты", "Хлеб и выпечка", "Фрукты и овощи"]
+
+# (каталог, название, единица, цена в ₽, код картинки, эмодзи, цвет фона, скидка, выбор редакции)
+DEMO_PRODUCTS = [
+    ("Напитки", "Газировка Кола 1.5 л", "шт", 119, "cola", "🥤", "#fde2e2", None, 0),
+    ("Напитки", "Сок апельсиновый 1 л", "шт", 109, "orange-juice", "🧃", "#ffe8c7", "10%", 1),
+    ("Напитки", "Вода питьевая 1.5 л", "шт", 45, "water", "💧", "#d9efff", None, 0),
+    ("Сладости", "Шоколад молочный 90 г", "шт", 89, "chocolate", "🍫", "#f1ddd0", None, 1),
+    ("Сладости", "Печенье овсяное 300 г", "шт", 79, "cookies", "🍪", "#f8e8c8", "15%", 0),
+    ("Сладости", "Конфеты ассорти", "100 г", 65, "candy", "🍬", "#fbdcec", None, 0),
+    ("Снеки", "Чипсы сметана и зелень 140 г", "шт", 129, "chips", "🍟", "#fff1b8", None, 0),
+    ("Снеки", "Сухарики ржаные 100 г", "шт", 59, "croutons", "🥖", "#f3e3c3", None, 0),
+    ("Снеки", "Орешки солёные 150 г", "шт", 119, "nuts", "🥜", "#efd9bd", "10%", 0),
+    ("Кофе и чай", "Кофе молотый 250 г", "шт", 349, "coffee", "☕", "#e8d8cc", None, 1),
+    ("Кофе и чай", "Чай чёрный 100 пакетиков", "шт", 189, "black-tea", "🫖", "#e6dccf", None, 0),
+    ("Кофе и чай", "Чай зелёный 25 пакетиков", "шт", 99, "green-tea", "🍵", "#dcefd5", None, 0),
+    ("Молочные продукты", "Молоко 3.2% 1 л", "шт", 94, "milk", "🥛", "#e4eefb", None, 0),
+    ("Молочные продукты", "Кефир 1% 900 мл", "шт", 85, "kefir", "🥛", "#e9f0f7", None, 0),
+    ("Молочные продукты", "Сыр Гауда", "100 г", 119, "cheese", "🧀", "#fff0b3", "15%", 1),
+    ("Молочные продукты", "Йогурт клубничный 125 г", "шт", 49, "yogurt", "🍓", "#fde0e6", None, 0),
+    ("Хлеб и выпечка", "Хлеб пшеничный", "шт", 45, "bread", "🍞", "#f6e3c4", None, 0),
+    ("Хлеб и выпечка", "Батон нарезной", "шт", 52, "baguette", "🥖", "#f4e0bd", None, 0),
+    ("Хлеб и выпечка", "Круассан", "шт", 69, "croissant", "🥐", "#fbe2b5", "10%", 0),
+    ("Фрукты и овощи", "Яблоки", "КГ", 139, "apples", "🍎", "#fddede", None, 1),
+    ("Фрукты и овощи", "Бананы", "КГ", 119, "bananas", "🍌", "#fff4b0", None, 0),
+    ("Фрукты и овощи", "Картофель", "КГ", 49, "potato", "🥔", "#efe0cb", None, 0),
+    ("Фрукты и овощи", "Помидоры", "КГ", 229, "tomatoes", "🍅", "#fdd9d3", None, 0),
+    ("Фрукты и овощи", "Огурцы", "КГ", 179, "cucumbers", "🥒", "#dcf0d3", None, 0),
+]
+DEMO_STYLE = {p[4]: (p[5], p[6]) for p in DEMO_PRODUCTS}
+
+
+def demo_svg(slug) -> str:
+    emoji, bg = DEMO_STYLE.get(slug, ("🛒", "#e3f4ec"))
+    return (
+        '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 400 400">'
+        '<defs><linearGradient id="g" x1="0" y1="0" x2="1" y2="1">'
+        f'<stop offset="0" stop-color="{bg}"/><stop offset="1" stop-color="#ffffff"/>'
+        '</linearGradient></defs>'
+        '<rect width="400" height="400" fill="url(#g)"/>'
+        '<circle cx="200" cy="210" r="125" fill="#ffffff" opacity=".6"/>'
+        f'<text x="200" y="262" font-size="150" text-anchor="middle">{emoji}</text>'
+        '</svg>'
+    )
+
+
+def seed_demo() -> int:
+    """Добавляет демо-каталоги и товары. Уже добавленные повторно не создаются."""
+    for cat in DEMO_CATEGORIES:
+        execute("INSERT OR IGNORE INTO categories (name) VALUES (?)", (cat,))
+    added = 0
+    for cat, name, unit, price, slug, _emoji, _bg, disc, feat in DEMO_PRODUCTS:
+        photo = "demo:" + slug
+        if query("SELECT 1 FROM products WHERE photo = ?", (photo,), one=True):
+            continue
+        execute(
+            "INSERT INTO products (name, unit, price, photo, discount, category, featured) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (name, unit, price, photo, disc, cat, feat),
+        )
+        added += 1
+    return added
+
+
 def get_user(user_id):
     return query("SELECT * FROM users WHERE user_id = ?", (user_id,), one=True)
 
@@ -190,17 +261,16 @@ def fmt_user(row) -> str:
 
 
 def final_price(price, discount):
-    """Цена с учётом скидки вида '10%' или '50сом'."""
+    """Цена с учётом скидки: '10%' (процент) или '50₽' / '50сом' (сумма)."""
     if not discount:
         return price
-    try:
-        if discount.endswith("%"):
-            return round(price * (1 - float(discount[:-1]) / 100), 2)
-        if discount.endswith("сом"):
-            return max(round(price - float(discount[:-3]), 2), 0)
-    except ValueError:
-        pass
-    return price
+    m = re.match(r"^\s*([0-9]+(?:\.[0-9]+)?)\s*(.*)$", str(discount))
+    if not m:
+        return price
+    value, suffix = float(m.group(1)), m.group(2).strip()
+    if suffix == "%":
+        return round(price * (1 - value / 100), 2)
+    return max(round(price - value, 2), 0)
 
 
 def parse_number(text):
@@ -358,6 +428,9 @@ async def owner_panel(message: types.Message):
              types.KeyboardButton(text="👥 Список админов")],
             [types.KeyboardButton(text="🚫 Забаненные"),
              types.KeyboardButton(text="📞 Контакты сайта")],
+            [types.KeyboardButton(text="🧪 Загрузить демо-товары"),
+             types.KeyboardButton(text="💱 Валюта сайта")],
+            [types.KeyboardButton(text="🧹 Убрать все товары")],
             [types.KeyboardButton(text="🔙 Главное меню")],
         ],
         resize_keyboard=True,
@@ -530,6 +603,7 @@ async def products_menu(message: types.Message):
              types.KeyboardButton(text="🗑 Снять товар")],
             [types.KeyboardButton(text="⭐ Выбор редакции"),
              types.KeyboardButton(text="📜 Весь список товаров")],
+            [types.KeyboardButton(text="🧹 Убрать все товары")],
             [types.KeyboardButton(text="🔙 Главное меню")],
         ],
         resize_keyboard=True,
@@ -550,9 +624,9 @@ async def list_all_products(message: types.Message):
         cat_text = f"\n📁 Каталог: {esc(p['category'])}" if p["category"] else ""
         caption = (
             f"📦 <b>{esc(p['name'])}</b>{cat_text}\n"
-            f"Цена: {p['price']:g} сом / {esc(p['unit'])}{disc_text}"
+            f"Цена: {p['price']:g} {esc(cur())} / {esc(p['unit'])}{disc_text}"
         )
-        if p["photo"]:
+        if p["photo"] and not p["photo"].startswith("demo:"):
             try:
                 await message.answer_photo(photo=p["photo"], caption=caption, parse_mode="HTML")
                 continue
@@ -641,6 +715,79 @@ async def process_prod_photo(message: types.Message, state: FSMContext):
 @dp.message(ProductState.waiting_for_photo)
 async def process_prod_photo_wrong(message: types.Message):
     await message.answer("Пришлите фото товара (как изображение).")
+
+
+@dp.message(F.text == "🧹 Убрать все товары", IsAdmin())
+async def clear_all_ask(message: types.Message):
+    products = query("SELECT COUNT(*) AS n FROM products", one=True)["n"]
+    cats = query("SELECT COUNT(*) AS n FROM categories", one=True)["n"]
+    if not products and not cats:
+        await message.answer("Товаров и каталогов нет.")
+        return
+    kb = types.InlineKeyboardMarkup(inline_keyboard=[
+        [types.InlineKeyboardButton(text=f"🗑 Убрать все товары ({products})",
+                                    callback_data="clear_products")],
+        [types.InlineKeyboardButton(text="🗑 Товары и каталоги", callback_data="clear_all")],
+        [types.InlineKeyboardButton(text="Отмена", callback_data="clear_cancel")],
+    ])
+    await message.answer(
+        f"⚠️ Сейчас товаров: {products}, каталогов: {cats}.\n"
+        "Что убрать? Это действие нельзя отменить.",
+        reply_markup=kb,
+    )
+
+
+@dp.callback_query(F.data.in_(["clear_products", "clear_all", "clear_cancel"]), IsAdmin())
+async def clear_all_action(callback: types.CallbackQuery):
+    if callback.data == "clear_cancel":
+        await callback.message.edit_text("Отменено.")
+        await callback.answer()
+        return
+    execute("DELETE FROM products")
+    if callback.data == "clear_all":
+        execute("DELETE FROM categories")
+        text = "Все товары и каталоги убраны✅"
+    else:
+        text = "Все товары убраны✅"
+    await callback.answer("Готово")
+    await callback.message.edit_text(text)
+
+
+@dp.message(F.text == "🧪 Загрузить демо-товары", IsOwner())
+async def load_demo(message: types.Message):
+    added = seed_demo()
+    set_text("demo_seeded", "1")
+    await message.answer(
+        f"Демо-каталоги и товары загружены✅ Добавлено товаров: {added}.\n"
+        "Убрать их можно кнопкой «🧹 Убрать все товары»."
+    )
+
+
+CURRENCIES = {"rub": "₽", "som": "сом", "usd": "$", "kzt": "₸"}
+
+
+@dp.message(F.text == "💱 Валюта сайта", IsOwner())
+async def currency_menu(message: types.Message):
+    rows = [[types.InlineKeyboardButton(
+        text=("✅ " if sym == cur() else "") + sym, callback_data=f"cur_{code}")]
+        for code, sym in CURRENCIES.items()]
+    await message.answer(
+        f"Сейчас цены на сайте и в боте показываются в: {cur()}\nВыберите валюту:",
+        reply_markup=types.InlineKeyboardMarkup(inline_keyboard=rows),
+    )
+
+
+@dp.callback_query(F.data.startswith("cur_"), IsOwner())
+async def currency_set(callback: types.CallbackQuery):
+    sym = CURRENCIES.get(callback.data[4:])
+    if not sym:
+        await callback.answer()
+        return
+    set_text("currency", sym)
+    await callback.answer("Готово")
+    await callback.message.edit_text(
+        f"Валюта: {sym} ✅\nСуммы в базе не пересчитываются, меняется только подпись."
+    )
 
 
 def featured_markup():
@@ -806,7 +953,7 @@ async def select_discount_type(callback: types.CallbackQuery, state: FSMContext)
     await state.update_data(prod_id=callback.data.split("_", 1)[1])
     kb = types.InlineKeyboardMarkup(inline_keyboard=[[
         types.InlineKeyboardButton(text="Скидка %", callback_data="dtype_percent"),
-        types.InlineKeyboardButton(text="Скидка сом", callback_data="dtype_som"),
+        types.InlineKeyboardButton(text="Скидка в валюте", callback_data="dtype_som"),
     ]])
     await callback.message.edit_text("Тип скидки:", reply_markup=kb)
     await callback.answer()
@@ -814,7 +961,7 @@ async def select_discount_type(callback: types.CallbackQuery, state: FSMContext)
 
 @dp.callback_query(F.data.startswith("dtype_"), IsAdmin())
 async def process_discount_type(callback: types.CallbackQuery, state: FSMContext):
-    dtype = "%" if callback.data == "dtype_percent" else "сом"
+    dtype = "%" if callback.data == "dtype_percent" else cur()
     await state.update_data(dtype=dtype)
     await callback.message.answer(f"Введите значение ({dtype}):")
     await state.set_state(DiscountState.waiting_for_value)
@@ -1144,7 +1291,7 @@ INDEX_HTML = """<!doctype html>
   <div class="dhead"><span>Корзина</span><button class="x" id="closecart" aria-label="Закрыть">&times;</button></div>
   <div class="items" id="items"></div>
   <div class="dfoot" id="dfoot">
-    <div class="total"><span>Итого</span><span id="total">0 сом</span></div>
+    <div class="total"><span>Итого</span><span id="total">0 ₽</span></div>
     <input id="f-name" placeholder="Ваше имя" maxlength="64" autocomplete="name">
     <input id="f-phone" placeholder="Телефон" maxlength="32" inputmode="tel" autocomplete="tel">
     <input id="f-address" placeholder="Адрес доставки" maxlength="200" autocomplete="street-address">
@@ -1160,6 +1307,7 @@ INDEX_HTML = """<!doctype html>
 <div class="toast" id="toast"></div>
 
 <script>
+  let CURRENCY = "₽";
   const INFO = {
     about: ["О нас", "Продуктовый Магазин — свежие продукты с доставкой до двери. Мы работаем каждый день, чтобы вы всегда находили хорошие цены и качество."],
     order: ["Как сделать заказ", "1. Выберите товары и нажмите «+». 2. Откройте корзину и укажите имя, телефон и адрес. 3. Нажмите «Оформить заказ» — мы свяжемся с вами для подтверждения."],
@@ -1177,7 +1325,8 @@ INDEX_HTML = """<!doctype html>
     if (text !== undefined) e.textContent = text;
     return e;
   }
-  function money(n) { return Number(n).toLocaleString("ru-RU", { maximumFractionDigits: 2 }) + " сом"; }
+  function money(n) { return Number(n).toLocaleString("ru-RU", { maximumFractionDigits: 2 }) + " " + CURRENCY; }
+  function discText(d) { return String(d).endsWith("%") ? d : parseFloat(d) + " " + CURRENCY; }
   function toast(t) {
     const x = $("#toast"); x.textContent = t; x.classList.add("show");
     clearTimeout(x._t); x._t = setTimeout(() => x.classList.remove("show"), 1600);
@@ -1283,7 +1432,7 @@ INDEX_HTML = """<!doctype html>
       if (p.photo) { const img = el("img"); img.src = p.photo; img.alt = p.name; img.loading = "lazy"; th.appendChild(img); }
       else th.textContent = "🛒";
       card.appendChild(th);
-      if (p.discount) card.appendChild(el("div", "badge", "-" + p.discount));
+      if (p.discount) card.appendChild(el("div", "badge", "-" + discText(p.discount)));
       if (p.category) card.appendChild(el("div", "cat", p.category));
       card.appendChild(el("div", "name", p.name));
       const bottom = el("div", "bottom");
@@ -1337,6 +1486,7 @@ INDEX_HTML = """<!doctype html>
       ]);
       if (!Array.isArray(p) || !Array.isArray(a)) throw new Error("bad");
       products = p; ads = a;
+      CURRENCY = inf.currency || CURRENCY;
       const digits = (inf.phone || "").replace(/[^0-9+]/g, "");
       $("#phone").textContent = inf.phone || ""; $("#phone").href = "tel:" + digits;
       $("#address").textContent = inf.address || "";
@@ -1431,6 +1581,7 @@ async def handle_info(request):
     return web.json_response({
         "phone": get_text("shop_phone", DEFAULT_PHONE),
         "address": get_text("shop_address", DEFAULT_ADDRESS),
+        "currency": cur(),
     })
 
 
@@ -1445,6 +1596,9 @@ async def handle_photo(request):
     )
     if not known:
         raise web.HTTPNotFound()
+    if file_id.startswith("demo:"):
+        return web.Response(text=demo_svg(file_id[5:]), content_type="image/svg+xml",
+                            charset="utf-8", headers={"Cache-Control": "public, max-age=3600"})
     try:
         tg_file = await bot.get_file(file_id)
         buf = await bot.download_file(tg_file.file_path)
@@ -1514,7 +1668,7 @@ async def handle_order(request):
         price = final_price(p["price"], p["discount"])
         subtotal = round(price * qty, 2)
         total += subtotal
-        lines.append(f"• {esc(p['name'])} × {qty} {esc(p['unit'])} = {subtotal:g} сом")
+        lines.append(f"• {esc(p['name'])} × {qty} {esc(p['unit'])} = {subtotal:g} {esc(cur())}")
     if not lines:
         return order_error("Товары из корзины больше недоступны")
 
@@ -1527,7 +1681,7 @@ async def handle_order(request):
         f"🛒 <b>Новый заказ №{order_id}</b>\n\n"
         f"👤 {esc(name)}\n📞 {esc(phone)}\n📍 {esc(address)}\n\n"
         + "\n".join(lines)
-        + f"\n\n💰 <b>Итого: {round(total, 2):g} сом</b>"
+        + f"\n\n💰 <b>Итого: {round(total, 2):g} {esc(cur())}</b>"
     )
     return web.json_response({"ok": True, "id": order_id})
 
@@ -1551,6 +1705,9 @@ async def run_web():
 async def main():
     if is_admin_user(SUPER_ADMIN_ID) and not get_user(SUPER_ADMIN_ID):
         register_user(SUPER_ADMIN_ID, "Владелец", "")
+    if get_text("demo_seeded") != "1" and not query("SELECT 1 FROM products LIMIT 1", one=True):
+        seed_demo()
+        set_text("demo_seeded", "1")
     await run_web()
     await dp.start_polling(bot)
 
