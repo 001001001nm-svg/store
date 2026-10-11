@@ -19,10 +19,11 @@ dp = Dispatcher(storage=MemoryStorage())
 BOT_ACTIVE = True
 SITE_ACTIVE = True
 
-# --- Инициализация БД ---
+# --- Надежная инициализация базы данных ---
 def init_db():
     conn = sqlite3.connect("store.db")
     cur = conn.cursor()
+    
     cur.execute("""
         CREATE TABLE IF NOT EXISTS users (
             user_id INTEGER PRIMARY KEY,
@@ -56,6 +57,18 @@ def init_db():
             photo TEXT
         )
     """)
+    conn.commit()
+
+    # Проверка и автоматическое добавление недостающих колонок в старую БД
+    cur.execute("PRAGMA table_info(products)")
+    columns = [column[1] for column in cur.fetchall()]
+    if "category" not in columns:
+        cur.execute("ALTER TABLE products ADD COLUMN category TEXT")
+    if "discount" not in columns:
+        cur.execute("ALTER TABLE products ADD COLUMN discount TEXT")
+    if "photo" not in columns:
+        cur.execute("ALTER TABLE products ADD COLUMN photo TEXT")
+    
     conn.commit()
     conn.close()
 
@@ -669,7 +682,7 @@ async def back_to_main(message: types.Message):
     kb = main_menu_kb(is_owner, is_admin)
     await message.answer("Главное меню:", reply_markup=kb)
 
-# --- СТАБИЛЬНЫЙ И БЕЗОПАСНЫЙ САЙТ ---
+# --- ВЕБ-СЕРВЕР И ВИТРИНА МАГАЗИНА ---
 async def handle_website(request):
     global SITE_ACTIVE
     if not SITE_ACTIVE:
@@ -679,22 +692,32 @@ async def handle_website(request):
     categories = []
     products = []
 
+    # Безопасное чтение данных
     try:
         conn = sqlite3.connect("store.db", timeout=10.0)
         cur = conn.cursor()
         
-        cur.execute("SELECT title, content FROM advertisements")
-        ads = cur.fetchall()
-        
-        cur.execute("SELECT name FROM categories")
-        categories = [row[0] for row in cur.fetchall()]
-        
-        cur.execute("SELECT name, unit, price, discount, category FROM products")
-        products = cur.fetchall()
+        try:
+            cur.execute("SELECT title, content FROM advertisements")
+            ads = cur.fetchall()
+        except:
+            pass
+
+        try:
+            cur.execute("SELECT name FROM categories")
+            categories = [row[0] for row in cur.fetchall()]
+        except:
+            pass
+
+        try:
+            cur.execute("SELECT name, unit, price, discount, category FROM products")
+            products = cur.fetchall()
+        except:
+            pass
+
         conn.close()
     except Exception as e:
-        # Если возникла любая ошибка с БД, отдаем простую рабочую страницу вместо падения
-        pass
+        print(f"Error reading DB: {e}")
 
     html = f"""
     <!DOCTYPE html>
@@ -780,7 +803,7 @@ async def handle_website(request):
     if products:
         for name, unit, price, discount, cat in products:
             disc_badge = f'<span class="product-discount">-{discount}</span>' if discount else ''
-            cat_label = f'<div class="product-cat">{cat}</div>' if cat else ''
+            cat_label = f'<div class="product-cat">{cat}</div>' if cat or "Без категории" else ''
             html += f"""
                 <div class="product-card">
                     <div>
