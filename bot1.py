@@ -23,7 +23,6 @@ SITE_ACTIVE = True
 def init_db():
     conn = sqlite3.connect("store.db")
     cur = conn.cursor()
-    # Пользователи / Админы
     cur.execute("""
         CREATE TABLE IF NOT EXISTS users (
             user_id INTEGER PRIMARY KEY,
@@ -32,14 +31,12 @@ def init_db():
             is_admin INTEGER DEFAULT 0
         )
     """)
-    # Каталоги
     cur.execute("""
         CREATE TABLE IF NOT EXISTS categories (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             name TEXT UNIQUE
         )
     """)
-    # Товары
     cur.execute("""
         CREATE TABLE IF NOT EXISTS products (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -51,7 +48,6 @@ def init_db():
             category TEXT
         )
     """)
-    # Реклама
     cur.execute("""
         CREATE TABLE IF NOT EXISTS advertisements (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -65,7 +61,6 @@ def init_db():
 
 init_db()
 
-# --- Вспомогательные функции БД ---
 def get_user(user_id):
     conn = sqlite3.connect("store.db")
     cur = conn.cursor()
@@ -108,7 +103,6 @@ class CategoryState(StatesGroup):
     waiting_for_name = State()
 
 class DiscountState(StatesGroup):
-    waiting_for_type = State()
     waiting_for_value = State()
 
 class AdState(StatesGroup):
@@ -241,16 +235,13 @@ async def admin_actions(callback: types.CallbackQuery):
     elif action == "ban":
         cur.execute("DELETE FROM users WHERE user_id = ?", (target_id,))
         conn.commit()
-        await callback.answer("Пользователь удален/забанен!")
+        await callback.answer("Пользователь забанен!")
     conn.close()
     await callback.message.edit_text("Список обновлен.")
 
 # --- УПРАВЛЕНИЕ ТОВАРАМИ ---
 @dp.message(F.text == "📦 Управление товарами")
 async def products_menu(message: types.Message):
-    user_data = get_user(message.from_user.id)
-    if not user_data or (user_data[1] != 1 and message.from_user.id != SUPER_ADMIN_ID):
-        return
     kb = types.ReplyKeyboardMarkup(
         keyboard=[
             [types.KeyboardButton(text="➕ Добавить товар"), types.KeyboardButton(text="🗑 Снять товар")],
@@ -337,7 +328,7 @@ async def delete_product(callback: types.CallbackQuery):
     conn.commit()
     conn.close()
     await callback.answer("Товар успешно убран")
-    await callback.message.edit_text("Товар успешно убран с сайта✅")
+    await callback.message.edit_text("Товар успешно убран✅")
 
 # --- КАТАЛОГИ ---
 @dp.message(F.text == "📁 Каталоги")
@@ -432,7 +423,57 @@ async def select_discount_type(callback: types.CallbackQuery, state: FSMContext)
         [types.InlineKeyboardButton(text="Скидка %", callback_data="dtype_percent"),
          types.InlineKeyboardButton(text="Скидка Рублями", callback_data="dtype_rubles")]
     ])
-    await callback.message.edit_text("Выберите тип скидки:", reply_markup=markup=kb)
+    await callback.message.edit_text("Выберите тип скидки:", reply_markup=kb)
+
+@dp.callback_query(F.data.startswith("dtype_"))
+async def process_discount_type(callback: types.CallbackQuery, state: FSMContext):
+    dtype = "%" if callback.data == "dtype_percent" else "руб"
+    await state.update_data(dtype=dtype)
+    await callback.message.answer(f"Введите значение скидки ({dtype}):")
+    await state.set_state(DiscountState.waiting_for_value)
+    await callback.answer()
+
+@dp.message(DiscountState.waiting_for_value)
+async def process_discount_value(message: types.Message, state: FSMContext):
+    val = message.text.strip()
+    data = await state.get_data()
+    prod_id = data["prod_id"]
+    dtype = data["dtype"]
+    discount_str = f"{val}{dtype}"
+
+    conn = sqlite3.connect("store.db")
+    cur = conn.cursor()
+    cur.execute("UPDATE products SET discount = ? WHERE id = ?", (discount_str, prod_id))
+    conn.commit()
+    conn.close()
+
+    await state.clear()
+    await message.answer("Скидка успешно добавлена✅")
+
+@dp.message(F.text == "🗑 Убрать скидку")
+async def remove_discount_list(message: types.Message):
+    conn = sqlite3.connect("store.db")
+    cur = conn.cursor()
+    cur.execute("SELECT id, name FROM products WHERE discount IS NOT NULL")
+    products = cur.fetchall()
+    conn.close()
+    if not products:
+        await message.answer("Нет товаров со скидками.")
+        return
+    kb_builder = [[types.InlineKeyboardButton(text=p[1], callback_data=f"rmdisc_{p[0]}")] for p in products]
+    markup = types.InlineKeyboardMarkup(inline_keyboard=kb_builder)
+    await message.answer("Выберите товар, чтобы убрать скидку:", reply_markup=markup)
+
+@dp.callback_query(F.data.startswith("rmdisc_"))
+async def remove_discount_action(callback: types.CallbackQuery):
+    prod_id = int(callback.data.split("_")[1])
+    conn = sqlite3.connect("store.db")
+    cur = conn.cursor()
+    cur.execute("UPDATE products SET discount = NULL WHERE id = ?", (prod_id,))
+    conn.commit()
+    conn.close()
+    await callback.answer("Скидка успешно убрана")
+    await callback.message.edit_text("Скидка успешно убрана✅")
 
 # --- РЕКЛАМА ---
 @dp.message(F.text == "📢 Реклама")
