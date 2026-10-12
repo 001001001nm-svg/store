@@ -28,6 +28,8 @@ SUPER_ADMIN_ID = int(os.environ.get("SUPER_ADMIN_ID", "8636623905"))
 DB_PATH = os.environ.get("DB_PATH", "store.db")
 DEFAULT_PHONE = "+7 (999) 206-63-75"
 DEFAULT_ADDRESS = "г. Санкт-Петербург, Россия"
+DELIVERY_FEE = 150          # стоимость доставки
+FREE_DELIVERY_FROM = 5000   # от этой суммы товаров доставка бесплатная
 
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher(storage=MemoryStorage())
@@ -165,70 +167,21 @@ def cur() -> str:
     return get_text("currency", "₽")
 
 
-# ---------- временные (демо) каталоги и товары ----------
-DEMO_CATEGORIES = ["Напитки", "Сладости", "Снеки", "Кофе и чай",
-                   "Молочные продукты", "Хлеб и выпечка", "Фрукты и овощи"]
-
-# (каталог, название, единица, цена в ₽, код картинки, эмодзи, цвет фона, скидка, выбор редакции)
-DEMO_PRODUCTS = [
-    ("Напитки", "Газировка Кола 1.5 л", "шт", 119, "cola", "🥤", "#fde2e2", None, 0),
-    ("Напитки", "Сок апельсиновый 1 л", "шт", 109, "orange-juice", "🧃", "#ffe8c7", "10%", 1),
-    ("Напитки", "Вода питьевая 1.5 л", "шт", 45, "water", "💧", "#d9efff", None, 0),
-    ("Сладости", "Шоколад молочный 90 г", "шт", 89, "chocolate", "🍫", "#f1ddd0", None, 1),
-    ("Сладости", "Печенье овсяное 300 г", "шт", 79, "cookies", "🍪", "#f8e8c8", "15%", 0),
-    ("Сладости", "Конфеты ассорти", "100 г", 65, "candy", "🍬", "#fbdcec", None, 0),
-    ("Снеки", "Чипсы сметана и зелень 140 г", "шт", 129, "chips", "🍟", "#fff1b8", None, 0),
-    ("Снеки", "Сухарики ржаные 100 г", "шт", 59, "croutons", "🥖", "#f3e3c3", None, 0),
-    ("Снеки", "Орешки солёные 150 г", "шт", 119, "nuts", "🥜", "#efd9bd", "10%", 0),
-    ("Кофе и чай", "Кофе молотый 250 г", "шт", 349, "coffee", "☕", "#e8d8cc", None, 1),
-    ("Кофе и чай", "Чай чёрный 100 пакетиков", "шт", 189, "black-tea", "🫖", "#e6dccf", None, 0),
-    ("Кофе и чай", "Чай зелёный 25 пакетиков", "шт", 99, "green-tea", "🍵", "#dcefd5", None, 0),
-    ("Молочные продукты", "Молоко 3.2% 1 л", "шт", 94, "milk", "🥛", "#e4eefb", None, 0),
-    ("Молочные продукты", "Кефир 1% 900 мл", "шт", 85, "kefir", "🥛", "#e9f0f7", None, 0),
-    ("Молочные продукты", "Сыр Гауда", "100 г", 119, "cheese", "🧀", "#fff0b3", "15%", 1),
-    ("Молочные продукты", "Йогурт клубничный 125 г", "шт", 49, "yogurt", "🍓", "#fde0e6", None, 0),
-    ("Хлеб и выпечка", "Хлеб пшеничный", "шт", 45, "bread", "🍞", "#f6e3c4", None, 0),
-    ("Хлеб и выпечка", "Батон нарезной", "шт", 52, "baguette", "🥖", "#f4e0bd", None, 0),
-    ("Хлеб и выпечка", "Круассан", "шт", 69, "croissant", "🥐", "#fbe2b5", "10%", 0),
-    ("Фрукты и овощи", "Яблоки", "КГ", 139, "apples", "🍎", "#fddede", None, 1),
-    ("Фрукты и овощи", "Бананы", "КГ", 119, "bananas", "🍌", "#fff4b0", None, 0),
-    ("Фрукты и овощи", "Картофель", "КГ", 49, "potato", "🥔", "#efe0cb", None, 0),
-    ("Фрукты и овощи", "Помидоры", "КГ", 229, "tomatoes", "🍅", "#fdd9d3", None, 0),
-    ("Фрукты и овощи", "Огурцы", "КГ", 179, "cucumbers", "🥒", "#dcf0d3", None, 0),
-]
-DEMO_STYLE = {p[4]: (p[5], p[6]) for p in DEMO_PRODUCTS}
+# ---------- чистка прежних временных (демо) товаров ----------
+LEGACY_DEMO_CATEGORIES = ["Напитки", "Сладости", "Снеки", "Кофе и чай",
+                          "Молочные продукты", "Хлеб и выпечка", "Фрукты и овощи"]
 
 
-def demo_svg(slug) -> str:
-    emoji, bg = DEMO_STYLE.get(slug, ("🛒", "#e3f4ec"))
-    return (
-        '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 400 400">'
-        '<defs><linearGradient id="g" x1="0" y1="0" x2="1" y2="1">'
-        f'<stop offset="0" stop-color="{bg}"/><stop offset="1" stop-color="#ffffff"/>'
-        '</linearGradient></defs>'
-        '<rect width="400" height="400" fill="url(#g)"/>'
-        '<circle cx="200" cy="210" r="125" fill="#ffffff" opacity=".6"/>'
-        f'<text x="200" y="262" font-size="150" text-anchor="middle">{emoji}</text>'
-        '</svg>'
-    )
-
-
-def seed_demo() -> int:
-    """Добавляет демо-каталоги и товары. Уже добавленные повторно не создаются."""
-    for cat in DEMO_CATEGORIES:
-        execute("INSERT OR IGNORE INTO categories (name) VALUES (?)", (cat,))
-    added = 0
-    for cat, name, unit, price, slug, _emoji, _bg, disc, feat in DEMO_PRODUCTS:
-        photo = "demo:" + slug
-        if query("SELECT 1 FROM products WHERE photo = ?", (photo,), one=True):
-            continue
-        execute(
-            "INSERT INTO products (name, unit, price, photo, discount, category, featured) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?)",
-            (name, unit, price, photo, disc, cat, feat),
-        )
-        added += 1
-    return added
+def remove_legacy_demo():
+    """Убирает прежние временные товары, если они остались в базе (запускается при старте)."""
+    removed = execute("DELETE FROM products WHERE photo LIKE 'demo:%'")
+    if removed:
+        for cat in LEGACY_DEMO_CATEGORIES:
+            execute(
+                "DELETE FROM categories WHERE name = ? "
+                "AND NOT EXISTS (SELECT 1 FROM products WHERE category = ?)",
+                (cat, cat),
+            )
 
 
 def get_user(user_id):
@@ -428,8 +381,7 @@ async def owner_panel(message: types.Message):
              types.KeyboardButton(text="👥 Список админов")],
             [types.KeyboardButton(text="🚫 Забаненные"),
              types.KeyboardButton(text="📞 Контакты сайта")],
-            [types.KeyboardButton(text="🧪 Загрузить демо-товары"),
-             types.KeyboardButton(text="💱 Валюта сайта")],
+            [types.KeyboardButton(text="💱 Валюта сайта")],
             [types.KeyboardButton(text="🧹 Убрать все товары")],
             [types.KeyboardButton(text="🔙 Главное меню")],
         ],
@@ -626,7 +578,7 @@ async def list_all_products(message: types.Message):
             f"📦 <b>{esc(p['name'])}</b>{cat_text}\n"
             f"Цена: {p['price']:g} {esc(cur())} / {esc(p['unit'])}{disc_text}"
         )
-        if p["photo"] and not p["photo"].startswith("demo:"):
+        if p["photo"]:
             try:
                 await message.answer_photo(photo=p["photo"], caption=caption, parse_mode="HTML")
                 continue
@@ -751,16 +703,6 @@ async def clear_all_action(callback: types.CallbackQuery):
         text = "Все товары убраны✅"
     await callback.answer("Готово")
     await callback.message.edit_text(text)
-
-
-@dp.message(F.text == "🧪 Загрузить демо-товары", IsOwner())
-async def load_demo(message: types.Message):
-    added = seed_demo()
-    set_text("demo_seeded", "1")
-    await message.answer(
-        f"Демо-каталоги и товары загружены✅ Добавлено товаров: {added}.\n"
-        "Убрать их можно кнопкой «🧹 Убрать все товары»."
-    )
 
 
 CURRENCIES = {"rub": "₽", "som": "сом", "usd": "$", "kzt": "₸"}
@@ -1223,6 +1165,76 @@ INDEX_HTML = """<!doctype html>
     .thumb { height:130px; }
     footer .in { grid-template-columns:1fr; gap:26px; }
   }
+  /* ---------- украшения ---------- */
+  body { background:linear-gradient(180deg,#e8f6ee 0,#f4f7f5 340px); }
+  header { background:rgba(255,255,255,.92); backdrop-filter:blur(8px); }
+  h3.title::before { content:""; display:inline-block; width:6px; height:24px; border-radius:4px; background:var(--green); margin-right:10px; vertical-align:-3px; }
+  @keyframes up { from { opacity:0; transform:translateY(14px); } to { opacity:1; transform:none; } }
+  .card { animation:up .45s ease both; }
+  .card:hover { box-shadow:0 12px 28px rgba(20,60,40,.14); }
+  .thumb img { transition:transform .35s; }
+  .card:hover .thumb img { transform:scale(1.07); }
+  .add { transition:transform .15s, background .15s; }
+  .add:hover { transform:scale(1.1); }
+  .add:active { transform:scale(.9); }
+  @keyframes bump { 50% { transform:scale(1.4); } }
+  .count.bump { animation:bump .35s; }
+  .slide .deco { font-size:120px; line-height:1; filter:drop-shadow(0 10px 16px rgba(0,0,0,.25)); }
+
+  .promo { display:flex; align-items:center; justify-content:center; gap:12px; flex-wrap:wrap; text-align:center; padding:13px 18px; margin-bottom:18px;
+           border-radius:16px; color:#fff; font-size:15px; background:linear-gradient(110deg,#ff8a3d,#ff4d79,#ff8a3d); background-size:200% 100%;
+           animation:shine 6s linear infinite; box-shadow:0 8px 20px rgba(255,90,100,.25); }
+  @keyframes shine { to { background-position:200% 0; } }
+  @keyframes drive { 0%,100% { transform:translateX(-5px); } 50% { transform:translateX(7px); } }
+  .promo .truck { font-size:24px; display:inline-block; animation:drive 2.2s ease-in-out infinite; }
+  .promo .pill { background:rgba(255,255,255,.25); padding:4px 12px; border-radius:999px; font-weight:700; font-size:14px; }
+
+  .features { display:grid; grid-template-columns:repeat(4,1fr); gap:14px; margin-bottom:26px; }
+  .feat { background:#fff; border-radius:18px; padding:16px; display:flex; align-items:center; gap:12px; box-shadow:0 2px 10px rgba(20,60,40,.06); }
+  .feat > span { font-size:30px; width:50px; height:50px; border-radius:14px; background:var(--green-l); display:flex; align-items:center; justify-content:center; flex-shrink:0; }
+  .feat b { display:block; font-size:14px; }
+  .feat small { color:var(--muted); font-size:12px; }
+
+  .ship { margin:14px 20px 0; padding:14px; border-radius:16px; background:linear-gradient(120deg,#fff4e0,#ffe3ec); border:1px solid #ffd6c2; }
+  .ship.done { background:linear-gradient(120deg,#dff7e8,#e6fbf3); border-color:#b8ebcf; }
+  .shiptext { font-size:14px; font-weight:700; color:#a2430f; margin-bottom:10px; line-height:1.4; }
+  .ship.done .shiptext { color:var(--green-d); }
+  .bar { height:12px; border-radius:999px; background:rgba(0,0,0,.08); overflow:hidden; }
+  .bar i { display:block; height:100%; width:0; border-radius:999px; background:linear-gradient(90deg,#ff8a3d,#ff4d79); transition:width .4s; }
+  .ship.done .bar i { background:linear-gradient(90deg,#2f9e6c,#5fd39a); }
+  .row { display:flex; justify-content:space-between; font-size:15px; color:#4a5a52; }
+  .row .free { color:var(--green-d); font-weight:700; }
+  .note { text-align:center; font-size:13px; font-weight:700; color:#d9480f; background:#fff4e6; border-radius:10px; padding:9px; }
+  .note.free { color:var(--green-d); background:var(--green-l); }
+
+  @media (max-width:760px) {
+    .features { grid-template-columns:repeat(2,1fr); gap:10px; }
+    .feat { padding:12px; }
+    .feat > span { width:40px; height:40px; font-size:24px; }
+    .slide .deco { display:none; }
+    .promo { font-size:13px; padding:10px 12px; }
+    .ship { margin:12px 14px 0; }
+  }
+  /* ---------- как в сервисах доставки продуктов ---------- */
+  .titlebar { display:flex; align-items:center; justify-content:space-between; gap:12px; flex-wrap:wrap; margin-bottom:16px; }
+  .titlebar .title { margin:0; }
+  .sort { border:1px solid #d3dcd7; background:#fff; border-radius:12px; padding:9px 12px; font-size:14px; font-family:inherit; color:var(--text); }
+  .chip { font-size:15px; padding:9px 18px; transition:transform .15s, box-shadow .15s; }
+  .chip:hover { transform:translateY(-2px); box-shadow:0 6px 14px rgba(20,60,40,.12); }
+
+  .buy { display:flex; align-items:center; }
+  .buy.on { background:var(--green); border-radius:12px; padding:3px; color:#fff; }
+  .buy.on button { width:30px; height:30px; border:0; background:transparent; color:#fff; font-size:20px; font-weight:700; border-radius:9px; }
+  .buy.on button:hover { background:rgba(255,255,255,.18); }
+  .buy.on span { min-width:24px; text-align:center; font-weight:700; font-size:15px; }
+
+  .cartbar { position:fixed; left:50%; bottom:18px; transform:translateX(-50%); width:min(540px,calc(100% - 28px)); z-index:40; border:0; border-radius:18px;
+             background:linear-gradient(110deg,#1f7a52,#2f9e6c); color:#fff; padding:14px 18px; display:none; justify-content:space-between; align-items:center;
+             gap:10px; font-weight:700; font-size:15px; box-shadow:0 12px 28px rgba(20,90,60,.4); }
+  .cartbar small { font-weight:600; opacity:.92; font-size:13px; text-align:right; }
+  .toast { bottom:92px; }
+  .copy { padding-bottom:92px; }
+  @media (max-width:760px) { .cartbar { font-size:14px; padding:13px 14px; } .cartbar small { font-size:12px; } }
 </style>
 </head>
 <body>
@@ -1249,13 +1261,32 @@ INDEX_HTML = """<!doctype html>
 </div></header>
 
 <main>
+  <div class="promo">
+    <span class="truck">🚚</span>
+    <span>Бесплатная доставка при заказе от <b id="freeFrom">5 000 ₽</b></span>
+    <span class="pill" id="feeText">иначе +150 ₽</span>
+  </div>
   <div class="slider" id="slider" style="display:none">
     <div class="track" id="track"></div>
     <button class="arrow l" id="prev" aria-label="Назад">&#8249;</button>
     <button class="arrow r" id="next" aria-label="Вперёд">&#8250;</button>
   </div>
+  <div class="features">
+    <div class="feat"><span>🚚</span><div><b>Быстрая доставка</b><small>Привезём прямо к двери</small></div></div>
+    <div class="feat"><span>🥬</span><div><b>Свежие продукты</b><small>Только отборное качество</small></div></div>
+    <div class="feat"><span>🏷️</span><div><b>Скидки каждый день</b><small>Следите за акциями</small></div></div>
+    <div class="feat"><span>🎁</span><div><b id="featFree">Бесплатная доставка</b><small>на большие заказы</small></div></div>
+  </div>
   <div class="chips" id="chips"></div>
-  <h3 class="title" id="title">Популярные товары</h3>
+  <div class="titlebar">
+    <h3 class="title" id="title">Популярные товары</h3>
+    <select id="sort" class="sort" aria-label="Сортировка">
+      <option value="def">По умолчанию</option>
+      <option value="asc">Сначала дешевле</option>
+      <option value="desc">Сначала дороже</option>
+      <option value="sale">Сначала со скидкой</option>
+    </select>
+  </div>
   <div class="grid" id="grid"></div>
 </main>
 
@@ -1286,12 +1317,24 @@ INDEX_HTML = """<!doctype html>
   <div class="copy" id="copy"></div>
 </footer>
 
+<button class="cartbar" id="cartbar">
+  <span id="cb-left">🛒 Корзина</span>
+  <small id="cb-right"></small>
+</button>
+
 <div class="overlay" id="overlay"></div>
 <aside class="drawer" id="drawer">
   <div class="dhead"><span>Корзина</span><button class="x" id="closecart" aria-label="Закрыть">&times;</button></div>
+  <div class="ship" id="ship" style="display:none">
+    <div class="shiptext" id="shiptext"></div>
+    <div class="bar"><i id="barfill"></i></div>
+  </div>
   <div class="items" id="items"></div>
   <div class="dfoot" id="dfoot">
+    <div class="row"><span>Товары</span><span id="subtotal">0 ₽</span></div>
+    <div class="row"><span>Доставка</span><span id="delivery">+150 ₽</span></div>
     <div class="total"><span>Итого</span><span id="total">0 ₽</span></div>
+    <div class="note" id="note">🚚 +150 ₽ за доставку</div>
     <input id="f-name" placeholder="Ваше имя" maxlength="64" autocomplete="name">
     <input id="f-phone" placeholder="Телефон" maxlength="32" inputmode="tel" autocomplete="tel">
     <input id="f-address" placeholder="Адрес доставки" maxlength="200" autocomplete="street-address">
@@ -1308,6 +1351,7 @@ INDEX_HTML = """<!doctype html>
 
 <script>
   let CURRENCY = "₽";
+  let DELIVERY_FEE = 150, FREE_FROM = 5000;
   const INFO = {
     about: ["О нас", "Продуктовый Магазин — свежие продукты с доставкой до двери. Мы работаем каждый день, чтобы вы всегда находили хорошие цены и качество."],
     order: ["Как сделать заказ", "1. Выберите товары и нажмите «+». 2. Откройте корзину и укажите имя, телефон и адрес. 3. Нажмите «Оформить заказ» — мы свяжемся с вами для подтверждения."],
@@ -1316,7 +1360,7 @@ INDEX_HTML = """<!doctype html>
   };
   const TITLES = { all: "Популярные товары", new: "Новинки", featured: "Выбор редакции", sale: "Товары со скидкой" };
 
-  let products = [], ads = [], cart = {}, mode = "all", category = "all", q = "", slide = 0, timer = null, sending = false;
+  let products = [], ads = [], slides = [], cart = {}, mode = "all", category = "all", q = "", slide = 0, timer = null, sending = false;
   const $ = s => document.querySelector(s);
 
   function el(tag, cls, text) {
@@ -1327,6 +1371,41 @@ INDEX_HTML = """<!doctype html>
   }
   function money(n) { return Number(n).toLocaleString("ru-RU", { maximumFractionDigits: 2 }) + " " + CURRENCY; }
   function discText(d) { return String(d).endsWith("%") ? d : parseFloat(d) + " " + CURRENCY; }
+  function renderPromo() {
+    $("#freeFrom").textContent = money(FREE_FROM);
+    $("#feeText").textContent = "иначе +" + money(DELIVERY_FEE);
+    $("#featFree").textContent = "Бесплатно от " + money(FREE_FROM);
+  }
+  function defaultAds() {
+    return [
+      { badge: "БЫСТРАЯ ДОСТАВКА", title: "Свежие продукты прямо к вашей двери", content: "Выбирайте любимые товары и оформляйте заказ за пару минут.", photo: null },
+      { badge: "ПОДАРОК", title: "Доставка бесплатно от " + money(FREE_FROM), content: "Соберите корзину побольше — а мы привезём без доплаты.", photo: null }
+    ];
+  }
+  function catEmoji(n) {
+    const s = String(n).toLowerCase();
+    const map = [["напит", "🥤"], ["сок", "🧃"], ["вод", "💧"], ["слад", "🍫"], ["конфет", "🍬"], ["снек", "🍟"],
+      ["чипс", "🍟"], ["кофе", "☕"], ["чай", "🍵"], ["молоч", "🥛"], ["сыр", "🧀"], ["хлеб", "🍞"], ["выпеч", "🥐"],
+      ["фрукт", "🍎"], ["овощ", "🥬"], ["мяс", "🥩"], ["колбас", "🌭"], ["рыб", "🐟"], ["круп", "🌾"],
+      ["заморож", "🧊"], ["яйц", "🥚"], ["бытов", "🧼"], ["рамен", "🍜"], ["лапш", "🍜"]];
+    for (const pair of map) if (s.includes(pair[0])) return pair[1];
+    return "🛒";
+  }
+  function fillBuy(box) {
+    const id = box.dataset.id, qty = cart[id] || 0;
+    box.innerHTML = "";
+    box.className = qty ? "buy on" : "buy";
+    if (!qty) {
+      const add = el("button", "add", "+"); add.setAttribute("aria-label", "В корзину");
+      add.onclick = () => addToCart(id);
+      box.appendChild(add);
+    } else {
+      const minus = el("button", "", "−"); minus.onclick = () => changeQty(id, -1);
+      const plus = el("button", "", "+"); plus.onclick = () => changeQty(id, 1);
+      box.append(minus, el("span", "", String(qty)), plus);
+    }
+  }
+  function syncCards() { document.querySelectorAll(".buy").forEach(fillBuy); }
   function toast(t) {
     const x = $("#toast"); x.textContent = t; x.classList.add("show");
     clearTimeout(x._t); x._t = setTimeout(() => x.classList.remove("show"), 1600);
@@ -1346,7 +1425,8 @@ INDEX_HTML = """<!doctype html>
   }
 
   function renderCart() {
-    $("#count").textContent = cartCount();
+    const cnt = $("#count"); cnt.textContent = cartCount();
+    cnt.classList.remove("bump"); void cnt.offsetWidth; cnt.classList.add("bump");
     const box = $("#items"); box.innerHTML = "";
     let total = 0;
     const ids = Object.keys(cart).filter(id => find(id));
@@ -1364,14 +1444,34 @@ INDEX_HTML = """<!doctype html>
       box.appendChild(row);
     });
     if (!ids.length) box.appendChild(el("div", "empty", "Корзина пуста"));
-    $("#total").textContent = money(total);
+    const delivery = ids.length ? (total >= FREE_FROM ? 0 : DELIVERY_FEE) : 0;
+    $("#subtotal").textContent = money(total);
+    $("#delivery").textContent = delivery ? "+" + money(delivery) : "Бесплатно";
+    $("#delivery").className = delivery ? "" : "free";
+    $("#total").textContent = money(total + delivery);
+    $("#note").textContent = delivery ? "🚚 +" + money(DELIVERY_FEE) + " за доставку" : "🎉 Доставка бесплатная!";
+    $("#note").classList.toggle("free", !delivery);
+    const left = FREE_FROM - total;
+    $("#shiptext").textContent = left > 0
+      ? "🚚 Добавьте товаров ещё на " + money(left) + " — и доставка будет бесплатной! 🎁"
+      : "🎉 Ура! Ваш заказ едет к вам бесплатно!";
+    $("#barfill").style.width = Math.min(100, total / FREE_FROM * 100) + "%";
+    $("#ship").classList.toggle("done", left <= 0);
+    $("#ship").style.display = ids.length ? "block" : "none";
+    const bar = $("#cartbar");
+    const drawerOpen = $("#drawer").classList.contains("open");
+    bar.style.display = (ids.length && !drawerOpen) ? "flex" : "none";
+    $("#cb-left").textContent = "🛒 Корзина · " + cartCount() + " шт · " + money(total + delivery);
+    $("#cb-right").textContent = left > 0 ? "до бесплатной доставки " + money(left) : "🎉 доставка бесплатно";
+    syncCards();
     $("#dfoot").style.display = ids.length ? "grid" : "none";
   }
 
   function openCart(open) {
     $("#drawer").classList.toggle("open", open);
     $("#overlay").classList.toggle("open", open);
-    if (open) { $("#msg").textContent = ""; $("#msg").className = "msg"; renderCart(); }
+    if (open) { $("#msg").textContent = ""; $("#msg").className = "msg"; }
+    renderCart();
   }
 
   async function sendOrder() {
@@ -1392,7 +1492,7 @@ INDEX_HTML = """<!doctype html>
       cart = {}; saveCart(); renderCart();
       $("#dfoot").style.display = "none";
       $("#items").innerHTML = "";
-      $("#items").appendChild(el("div", "msg ok", "Заказ №" + d.id + " принят! Мы скоро свяжемся с вами."));
+      $("#items").appendChild(el("div", "msg ok", "Заказ №" + d.id + " принят! Итого с доставкой: " + money(d.total) + ". Мы скоро свяжемся с вами."));
     } catch (e) {
       msg.className = "msg err"; msg.textContent = e.message || "Ошибка отправки";
     }
@@ -1406,6 +1506,10 @@ INDEX_HTML = """<!doctype html>
     else if (mode === "sale") list = list.filter(p => p.discount);
     if (category !== "all") list = list.filter(p => p.category === category);
     if (q) list = list.filter(p => p.name.toLowerCase().includes(q));
+    const s = $("#sort").value;
+    if (s === "asc") list.sort((a, b) => a.final_price - b.final_price);
+    else if (s === "desc") list.sort((a, b) => b.final_price - a.final_price);
+    else if (s === "sale") list.sort((a, b) => (b.price - b.final_price) / b.price - (a.price - a.final_price) / a.price);
     return list;
   }
 
@@ -1414,7 +1518,7 @@ INDEX_HTML = """<!doctype html>
     const cats = ["all"].concat(Array.from(new Set(products.map(p => p.category).filter(Boolean))));
     if (cats.length < 2) return;
     cats.forEach(c => {
-      const b = el("button", "chip" + (c === category ? " active" : ""), c === "all" ? "Все" : c);
+      const b = el("button", "chip" + (c === category ? " active" : ""), c === "all" ? "🛍️ Все" : catEmoji(c) + " " + c);
       b.onclick = () => { category = c; renderChips(); renderProducts(); };
       box.appendChild(b);
     });
@@ -1439,9 +1543,8 @@ INDEX_HTML = """<!doctype html>
       const price = el("div", "price", money(p.final_price));
       if (p.final_price !== p.price) price.appendChild(el("span", "old", money(p.price)));
       price.appendChild(el("small", "", "за " + p.unit));
-      const add = el("button", "add", "+"); add.setAttribute("aria-label", "В корзину");
-      add.onclick = () => addToCart(p.id);
-      bottom.append(price, add);
+      const buy = el("div", "buy"); buy.dataset.id = p.id; fillBuy(buy);
+      bottom.append(price, buy);
       card.appendChild(bottom);
       $("#grid").appendChild(card);
     });
@@ -1450,9 +1553,9 @@ INDEX_HTML = """<!doctype html>
   function renderSlider() {
     const sl = $("#slider"), tr = $("#track");
     tr.innerHTML = "";
-    if (!ads.length) { sl.style.display = "none"; return; }
+    slides = ads.length ? ads : defaultAds();
     sl.style.display = "block";
-    ads.forEach((a, i) => {
+    slides.forEach((a, i) => {
       const s = el("div", "slide c" + (i % 4));
       const t = el("div", "txt");
       if (a.badge) t.appendChild(el("span", "tag" + (i % 2 ? " alt" : ""), a.badge));
@@ -1460,9 +1563,10 @@ INDEX_HTML = """<!doctype html>
       if (a.content) t.appendChild(el("p", "", a.content));
       s.appendChild(t);
       if (a.photo) { const img = el("img"); img.src = a.photo; img.alt = ""; s.appendChild(img); }
+      else s.appendChild(el("div", "deco", ["🛒", "🚚", "🥑", "🍓"][i % 4]));
       tr.appendChild(s);
     });
-    const many = ads.length > 1;
+    const many = slides.length > 1;
     $("#prev").style.display = many ? "flex" : "none";
     $("#next").style.display = many ? "flex" : "none";
     slide = 0; goSlide(0);
@@ -1470,7 +1574,7 @@ INDEX_HTML = """<!doctype html>
     if (many) timer = setInterval(() => goSlide(slide + 1), 5500);
   }
   function goSlide(i) {
-    slide = (i + ads.length) % ads.length;
+    slide = (i + slides.length) % slides.length;
     $("#track").style.transform = "translateX(-" + (slide * 100) + "%)";
   }
 
@@ -1487,6 +1591,9 @@ INDEX_HTML = """<!doctype html>
       if (!Array.isArray(p) || !Array.isArray(a)) throw new Error("bad");
       products = p; ads = a;
       CURRENCY = inf.currency || CURRENCY;
+      if (typeof inf.delivery_fee === "number") DELIVERY_FEE = inf.delivery_fee;
+      if (typeof inf.free_from === "number") FREE_FROM = inf.free_from;
+      renderPromo();
       const digits = (inf.phone || "").replace(/[^0-9+]/g, "");
       $("#phone").textContent = inf.phone || ""; $("#phone").href = "tel:" + digits;
       $("#address").textContent = inf.address || "";
@@ -1506,6 +1613,8 @@ INDEX_HTML = """<!doctype html>
   $("#prev").onclick = () => { goSlide(slide - 1); };
   $("#next").onclick = () => { goSlide(slide + 1); };
   $("#cartbtn").onclick = () => openCart(true);
+  $("#cartbar").onclick = () => openCart(true);
+  $("#sort").onchange = renderProducts;
   $("#closecart").onclick = () => openCart(false);
   $("#overlay").onclick = () => openCart(false);
   $("#send").onclick = sendOrder;
@@ -1582,6 +1691,8 @@ async def handle_info(request):
         "phone": get_text("shop_phone", DEFAULT_PHONE),
         "address": get_text("shop_address", DEFAULT_ADDRESS),
         "currency": cur(),
+        "delivery_fee": DELIVERY_FEE,
+        "free_from": FREE_DELIVERY_FROM,
     })
 
 
@@ -1596,9 +1707,6 @@ async def handle_photo(request):
     )
     if not known:
         raise web.HTTPNotFound()
-    if file_id.startswith("demo:"):
-        return web.Response(text=demo_svg(file_id[5:]), content_type="image/svg+xml",
-                            charset="utf-8", headers={"Cache-Control": "public, max-age=3600"})
     try:
         tg_file = await bot.get_file(file_id)
         buf = await bot.download_file(tg_file.file_path)
@@ -1672,18 +1780,22 @@ async def handle_order(request):
     if not lines:
         return order_error("Товары из корзины больше недоступны")
 
+    delivery = 0 if total >= FREE_DELIVERY_FROM else DELIVERY_FEE
+    grand = round(total + delivery, 2)
     order_id = insert(
         "INSERT INTO orders (name, phone, address, items, total) VALUES (?, ?, ?, ?, ?)",
-        (name, phone, address, "; ".join(lines), round(total, 2)),
+        (name, phone, address, "; ".join(lines), grand),
     )
     ORDER_LAST[ip] = now
+    delivery_text = f"{delivery:g} {esc(cur())}" if delivery else "бесплатно"
     await notify_admins(
         f"🛒 <b>Новый заказ №{order_id}</b>\n\n"
         f"👤 {esc(name)}\n📞 {esc(phone)}\n📍 {esc(address)}\n\n"
         + "\n".join(lines)
-        + f"\n\n💰 <b>Итого: {round(total, 2):g} {esc(cur())}</b>"
+        + f"\n\n🚚 Доставка: {delivery_text}"
+        + f"\n💰 <b>Итого: {grand:g} {esc(cur())}</b>"
     )
-    return web.json_response({"ok": True, "id": order_id})
+    return web.json_response({"ok": True, "id": order_id, "delivery": delivery, "total": grand})
 
 
 async def run_web():
@@ -1705,9 +1817,7 @@ async def run_web():
 async def main():
     if is_admin_user(SUPER_ADMIN_ID) and not get_user(SUPER_ADMIN_ID):
         register_user(SUPER_ADMIN_ID, "Владелец", "")
-    if get_text("demo_seeded") != "1" and not query("SELECT 1 FROM products LIMIT 1", one=True):
-        seed_demo()
-        set_text("demo_seeded", "1")
+    remove_legacy_demo()
     await run_web()
     await dp.start_polling(bot)
 
