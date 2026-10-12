@@ -7,6 +7,7 @@ import re
 import sqlite3
 import time
 from contextlib import closing
+from datetime import datetime, timedelta
 
 from aiohttp import web
 from aiogram import BaseMiddleware, Bot, Dispatcher, F, types
@@ -28,6 +29,7 @@ SUPER_ADMIN_ID = int(os.environ.get("SUPER_ADMIN_ID", "8636623905"))
 DB_PATH = os.environ.get("DB_PATH", "store.db")
 DEFAULT_PHONE = "+7 (999) 206-63-75"
 DEFAULT_ADDRESS = "г. Санкт-Петербург, Россия"
+TZ_OFFSET_HOURS = 3         # время заказов в боте: Санкт-Петербург (МСК, UTC+3)
 DELIVERY_FEE = 150          # стоимость доставки
 FREE_DELIVERY_FROM = 5000   # от этой суммы товаров доставка бесплатная
 
@@ -121,6 +123,13 @@ def init_db():
                 total REAL
             )
         """)
+        ocols = [r[1] for r in conn.execute("PRAGMA table_info(orders)")]
+        if "done" not in ocols:
+            conn.execute("ALTER TABLE orders ADD COLUMN done INTEGER DEFAULT 0")
+        if "done_at" not in ocols:
+            conn.execute("ALTER TABLE orders ADD COLUMN done_at TEXT")
+        if "delivery" not in ocols:
+            conn.execute("ALTER TABLE orders ADD COLUMN delivery REAL")
         conn.commit()
 
 
@@ -313,6 +322,8 @@ dp.callback_query.outer_middleware(AccessMiddleware())
 def main_menu_kb(user_id):
     kb = []
     if is_admin_user(user_id):
+        kb.append([types.KeyboardButton(text="🧾 Все актуальные заказы"),
+                   types.KeyboardButton(text="🗂 Архив заказов")])
         kb.append([types.KeyboardButton(text="📦 Управление товарами"),
                    types.KeyboardButton(text="📁 Каталоги")])
         kb.append([types.KeyboardButton(text="🏷 Скидки"),
@@ -730,6 +741,83 @@ async def currency_set(callback: types.CallbackQuery):
     await callback.message.edit_text(
         f"Валюта: {sym} ✅\nСуммы в базе не пересчитываются, меняется только подпись."
     )
+
+
+def fmt_time(value) -> str:
+    try:
+        dt = datetime.strptime(value, "%Y-%m-%d %H:%M:%S") + timedelta(hours=TZ_OFFSET_HOURS)
+        return dt.strftime("%d.%m %H:%M")
+    except (TypeError, ValueError):
+        return str(value or "")
+
+
+def order_text(o, with_status=False) -> str:
+    lines = [f"🛒 <b>Заказ №{o['id']}</b> · {fmt_time(o['created'])}"]
+    if with_status:
+        lines.append("✅ Выполнен" if o["done"] else "⏳ Не выполнен")
+    lines.append(f"👤 {esc(o['name'])}")
+    lines.append(f"📞 {esc(o['phone'])}")
+    lines.append(f"📍 {esc(o['address'])}")
+    lines.append("")
+    lines.append("\n".join((o["items"] or "").split("; ")))  # названия уже экранированы
+    lines.append("")
+    if o["delivery"] is not None:
+        delivery = f"{o['delivery']:g} {esc(cur())}" if o["delivery"] else "бесплатно"
+        lines.append(f"🚚 Доставка: {delivery}")
+    lines.append(f"💰 <b>Итого: {o['total']:g} {esc(cur())}</b>")
+    return "\n".join(lines)
+
+
+def order_done_kb(order_id) -> types.InlineKeyboardMarkup:
+    return types.InlineKeyboardMarkup(inline_keyboard=[[
+        types.InlineKeyboardButton(text="Заказ выполнен✅", callback_data=f"orderdone_{order_id}")
+    ]])
+
+
+@dp.message(F.text == "🧾 Все актуальные заказы", IsAdmin())
+async def active_orders(message: types.Message):
+    orders = query("SELECT * FROM orders WHERE done = 0 ORDER BY id ASC")
+    if not orders:
+        await message.answer("Актуальных заказов нет 🎉")
+        return
+    await message.answer(f"🧾 Актуальных заказов: {len(orders)}")
+    for o in orders:
+        await message.answer(order_text(o), parse_mode="HTML", reply_markup=order_done_kb(o["id"]))
+        await asyncio.sleep(0.05)
+
+
+@dp.callback_query(F.data.startswith("orderdone_"), IsAdmin())
+async def order_done(callback: types.CallbackQuery):
+    order_id = int(callback.data.split("_", 1)[1])
+    execute("UPDATE orders SET done = 1, done_at = CURRENT_TIMESTAMP WHERE id = ?", (order_id,))
+    await callback.answer("Заказ выполнен ✅")
+    try:
+        await callback.message.delete()
+    except Exception:
+        await callback.message.edit_text(f"Заказ №{order_id} выполнен ✅")
+
+
+@dp.message(F.text == "🗂 Архив заказов", IsAdmin())
+async def orders_archive(message: types.Message):
+    orders = query(
+        "SELECT * FROM orders WHERE created >= datetime('now', '-3 days') "
+        "ORDER BY created ASC, id ASC"
+    )
+    if not orders:
+        await message.answer("За последние 3 дня заказов не было.")
+        return
+    await message.answer(
+        f"🗂 Заказы за последние 3 дня: {len(orders)}\nСверху самые ранние.")
+    separator = "\n\n➖➖➖➖➖➖\n\n"
+    chunk = ""
+    for o in orders:
+        block = order_text(o, with_status=True)
+        if chunk and len(chunk) + len(separator) + len(block) > 3800:
+            await message.answer(chunk, parse_mode="HTML")
+            chunk = ""
+        chunk = chunk + separator + block if chunk else block
+    if chunk:
+        await message.answer(chunk, parse_mode="HTML")
 
 
 def featured_markup():
@@ -1264,7 +1352,6 @@ INDEX_HTML = """<!doctype html>
   <div class="promo">
     <span class="truck">🚚</span>
     <span>Бесплатная доставка при заказе от <b id="freeFrom">5 000 ₽</b></span>
-    <span class="pill" id="feeText">иначе +150 ₽</span>
   </div>
   <div class="slider" id="slider" style="display:none">
     <div class="track" id="track"></div>
@@ -1373,7 +1460,6 @@ INDEX_HTML = """<!doctype html>
   function discText(d) { return String(d).endsWith("%") ? d : parseFloat(d) + " " + CURRENCY; }
   function renderPromo() {
     $("#freeFrom").textContent = money(FREE_FROM);
-    $("#feeText").textContent = "иначе +" + money(DELIVERY_FEE);
     $("#featFree").textContent = "Бесплатно от " + money(FREE_FROM);
   }
   function defaultAds() {
@@ -1718,13 +1804,13 @@ async def handle_photo(request):
                         headers={"Cache-Control": "public, max-age=86400"})
 
 
-async def notify_admins(text):
+async def notify_admins(text, reply_markup=None):
     ids = {SUPER_ADMIN_ID}
     for r in query("SELECT user_id FROM users WHERE is_admin = 1 AND banned = 0"):
         ids.add(r["user_id"])
     for uid in ids:
         try:
-            await bot.send_message(uid, text, parse_mode="HTML")
+            await bot.send_message(uid, text, parse_mode="HTML", reply_markup=reply_markup)
         except Exception as e:
             logging.warning("Не удалось отправить заказ админу %s: %s", uid, e)
 
@@ -1783,8 +1869,8 @@ async def handle_order(request):
     delivery = 0 if total >= FREE_DELIVERY_FROM else DELIVERY_FEE
     grand = round(total + delivery, 2)
     order_id = insert(
-        "INSERT INTO orders (name, phone, address, items, total) VALUES (?, ?, ?, ?, ?)",
-        (name, phone, address, "; ".join(lines), grand),
+        "INSERT INTO orders (name, phone, address, items, total, delivery) VALUES (?, ?, ?, ?, ?, ?)",
+        (name, phone, address, "; ".join(lines), grand, delivery),
     )
     ORDER_LAST[ip] = now
     delivery_text = f"{delivery:g} {esc(cur())}" if delivery else "бесплатно"
@@ -1793,7 +1879,8 @@ async def handle_order(request):
         f"👤 {esc(name)}\n📞 {esc(phone)}\n📍 {esc(address)}\n\n"
         + "\n".join(lines)
         + f"\n\n🚚 Доставка: {delivery_text}"
-        + f"\n💰 <b>Итого: {grand:g} {esc(cur())}</b>"
+        + f"\n💰 <b>Итого: {grand:g} {esc(cur())}</b>",
+        reply_markup=order_done_kb(order_id),
     )
     return web.json_response({"ok": True, "id": order_id, "delivery": delivery, "total": grand})
 
