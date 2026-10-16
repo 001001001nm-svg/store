@@ -12,14 +12,14 @@ import requests
 from tavily import TavilyClient
 
 # ==========================================
-# 1. ПОЛНОЦЕННЫЙ ВЕБ-СЕРВЕР ДЛЯ RENDER (Удержание статуса UP)
+# 1. МИНИ ВЕБ-СЕРВЕР ДЛЯ RENDER (Статус UP)
 # ==========================================
 class SimpleHTTPRequestHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200)
         self.send_header("Content-type", "text/html; charset=utf-8")
         self.end_headers()
-        self.wfile.write(b"<html><body><h1>MyProfi KG Bot is Active & Running!</h1></body></html>")
+        self.wfile.write(b"<html><body><h1>MyProfi KG Bot Active & Running!</h1></body></html>")
 
     def do_HEAD(self):
         self.send_response(200)
@@ -29,12 +29,11 @@ def run_web_server():
     port = int(os.environ.get("PORT", 10000))
     try:
         server = HTTPServer(('0.0.0.0', port), SimpleHTTPRequestHandler)
-        print(f"Web server successfully started on port {port}")
+        print(f"Web server running on port {port}")
         server.serve_forever()
     except Exception as e:
         print(f"Web server error: {e}")
 
-# Запускаем веб-сервер в отдельном фоновом потоке, чтобы Render всегда получал код 200 OK
 threading.Thread(target=run_web_server, daemon=True).start()
 
 # ==========================================
@@ -81,9 +80,11 @@ def save_data():
 
 all_users, admins, banned_users, bot_enabled = load_data()
 user_states = {}
+user_blitz_games = {}
 
 LANGUAGES = ["🇷🇺 Русский", "🇰🇬 Кыргызча", "🇬🇧 English", "🇹🇷 Türkçe"]
 COUNTRIES = ["🇰🇬 Кыргызстан", "🇹🇷 Турция", "🇺🇸 США", "🇨🇳 Китай", "🇰🇷 Южная Корея", "🇨🇦 Канада"]
+SUBJECTS = ["📚 Литература", "📜 История", "📐 Математика", "🌍 География", "⚡ Физика", "💻 Информатика", "🧪 Химия"]
 
 # ==========================================
 # 3. ФУНКЦИЯ ВЕБ-ПОИСКА (TAVILY API)
@@ -105,7 +106,7 @@ def search_web(query):
         return ""
 
 # ==========================================
-# 4. ПОЛУЧЕНИЕ ТОЧНЫХ ФОТО И ИИ
+# 4. ПОЛУЧЕНИЕ ФОТО И ИИ
 # ==========================================
 def fetch_photo_bytes(query):
     if UNSPLASH_KEY:
@@ -181,7 +182,6 @@ def ask_ai(prompt, system_instruction):
                 print(f"Ошибка ИИ запроса ({model}): {e}")
                 continue
 
-    # Подробный ответ-резерв по категориям
     if "ВУЗ" in prompt or "ЖОЖ" in prompt:
         return "🏛️ Топ ВУЗы и Колледжи:\n1. Городской Университет — ведет прием по международным программам.\n2. Технологический Институт — гранты на технические специальности.\n3. Национальная Академия — программы обмена и стипендии."
     elif "Стипендии" in prompt or "Гранты" in prompt:
@@ -192,7 +192,46 @@ def ask_ai(prompt, system_instruction):
         return "💡 Полезные рекомендации:\n• Подавайте документы минимум за 6 месяцев до начала учебы.\n• Проверяйте дедлайны подачи на стипендии заранее."
 
 # ==========================================
-# 5. КЛАВИАТУРЫ
+# 5. ИИ ДЛЯ БЛИЦ-ОПРОСА
+# ==========================================
+def generate_blitz_question():
+    subject = random.choice(SUBJECTS)
+    sys_prompt = "Ты ведущий школьной викторины. Сгенерируй 1 короткий вопрос по школьной программе."
+    usr_prompt = f"Предмет: {subject}. Верни JSON строго: {{\"subject\": \"{subject}\", \"question\": \"текст вопроса\", \"answer\": \"краткий ответ\"}}"
+    
+    res = ask_ai(usr_prompt, sys_prompt)
+    if res:
+        try:
+            clean = res.replace("```json", "").replace("```", "").strip()
+            return json.loads(clean)
+        except Exception:
+            pass
+
+    fallbacks = [
+        {"subject": "📚 Литература", "question": "Как звали верного слугу Гринева в «Капитанской дочке»?", "answer": "Савельич"},
+        {"subject": "📜 История", "question": "В каком году произошла Куликовская битва?", "answer": "1380"},
+        {"subject": "📐 Математика", "question": "Чему равен корень из 144?", "answer": "12"},
+        {"subject": "🌍 География", "question": "Какое озеро самое глубокое в мире?", "answer": "Байкал"}
+    ]
+    return random.choice(fallbacks)
+
+def check_blitz_answer(user_ans, correct_ans, question_text):
+    sys_prompt = "Ты судья школьной викторины. Оцени, верен ли ответ пользователя по смыслу."
+    usr_prompt = f"Вопрос: {question_text}\nПравильный ответ: {correct_ans}\nОтвет пользователя: {user_ans}\n\nВерни JSON строго: {{\"is_correct\": true/false, \"comment\": \"короткий комментарий\"}}"
+    
+    res = ask_ai(usr_prompt, sys_prompt)
+    if res:
+        try:
+            clean = res.replace("```json", "").replace("```", "").strip()
+            return json.loads(clean)
+        except Exception:
+            pass
+
+    is_corr = correct_ans.lower() in user_ans.lower() or user_ans.lower() in correct_ans.lower()
+    return {"is_correct": is_corr, "comment": f"Правильный ответ: {correct_ans}"}
+
+# ==========================================
+# 6. КЛАВИАТУРЫ
 # ==========================================
 def get_language_keyboard():
     markup = types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
@@ -212,13 +251,13 @@ def get_main_keyboard(user_id, lang):
     if lang == "🇰🇬 Кыргызча":
         markup.row("🔥 Топ ЖОЖдор жана Колледждер", "💡 Лайфхактар жана Талаптар")
         markup.row("📄 Документтер тизмеси", "💰 Стипендиялар")
-        markup.row("🌍 Өлкөнү алмаштыруу", "🌐 Тилди алмаштыруу")
-        markup.row("🔄 Жаңы диалог")
+        markup.row("🎮 Блиц-опрос по предметам", "🌍 Өлкөнү алмаштыруу")
+        markup.row("🌐 Тилди алмаштыруу", "🔄 Жаңы диалог")
     else:
         markup.row("🔥 Топ ВУЗы и Колледжи", "💡 Лайфхаки и Требования")
         markup.row("📄 Список документов", "💰 Стипендии и Гранты")
-        markup.row("🌍 Сменить страну", "🌐 Сменить язык")
-        markup.row("🔄 Начать заново")
+        markup.row("🎮 Блиц-опрос по предметам", "🌍 Сменить страну")
+        markup.row("🌐 Сменить язык", "🔄 Начать заново")
 
     is_owner = (user_id == OWNER_ID)
     is_admin = (user_id in admins) or is_owner
@@ -259,7 +298,7 @@ def get_reels_inline_buttons():
     return markup
 
 # ==========================================
-# 6. ХЭНДЛЕРЫ I: ИНЛАЙН УПРАВЛЕНИЕ
+# 7. ХЭНДЛЕРЫ I: ИНЛАЙН УПРАВЛЕНИЕ
 # ==========================================
 @bot.callback_query_handler(func=lambda call: True)
 def handle_callbacks(call):
@@ -331,7 +370,7 @@ def handle_callbacks(call):
         bot.send_message(call.message.chat.id, ai_text, reply_markup=get_reels_inline_buttons())
 
 # ==========================================
-# 7. ХЭНДЛЕРЫ II: СООБЩЕНИЯ И ЛОГИКА
+# 8. ХЭНДЛЕРЫ II: СООБЩЕНИЯ И ЛОГИКА
 # ==========================================
 @bot.message_handler(commands=['start'])
 def start(message):
@@ -410,6 +449,39 @@ def handle_message(message):
     user_data = user_states[user_id]
     current_state = user_data.get("state")
 
+    # Обработка активной игры Блиц-опрос
+    if user_id in user_blitz_games and user_blitz_games[user_id].get("waiting_for_ans"):
+        if text in ["🛑 Завершить блиц", "🛑 Завершить игру"]:
+            score = user_blitz_games[user_id]["score"]
+            total = user_blitz_games[user_id]["total"]
+            del user_blitz_games[user_id]
+            lang = user_data.get("lang", "🇷🇺 Русский")
+            bot.send_message(message.chat.id, f"🏁 **Игра окончена!**\n\nТвой результат: **{score} из {total}**!", parse_mode="Markdown", reply_markup=get_main_keyboard(user_id, lang))
+            return
+
+        user_game = user_blitz_games[user_id]
+        user_game["waiting_for_ans"] = False
+        user_game["total"] += 1
+        
+        wait_msg = bot.send_message(message.chat.id, "🧠 *ИИ проверяет ответ...*", parse_mode="Markdown")
+        res = check_blitz_answer(text, user_game["current_a"], user_game["current_q"])
+        
+        try:
+            bot.delete_message(message.chat.id, wait_msg.message_id)
+        except Exception:
+            pass
+
+        if res.get("is_correct"):
+            user_game["score"] += 1
+            res_msg = f"✅ **Правильно!**\n\n💬 {res.get('comment', '')}\n\n🏆 Счёт: **{user_game['score']}/{user_game['total']}**"
+        else:
+            res_msg = f"❌ **Несовсем верно.**\n\n💬 {res.get('comment', f'Правильный ответ: {user_game[\"current_a\"]}')}\n\n🏆 Счёт: **{user_game['score']}/{user_game['total']}**"
+
+        markup = types.ReplyKeyboardMarkup(resize_keyboard=True)
+        markup.row("🚀 Следующий вопрос", "🛑 Завершить блиц")
+        bot.send_message(message.chat.id, res_msg, parse_mode="Markdown", reply_markup=markup)
+        return
+
     if current_state == "WAITING_FOR_ADMIN_INPUT" and user_id == OWNER_ID:
         user_data["state"] = None
         target = text.strip().replace("@", "")
@@ -474,6 +546,31 @@ def handle_message(message):
     lang = user_data.get("lang", "🇷🇺 Русский")
     c_country = user_data.get("country", "Китай")
 
+    # Старт Блиц-опроса по кнопке из меню
+    if text in ["🎮 Блиц-опрос по предметам", "🚀 Следующий вопрос"]:
+        if user_id not in user_blitz_games:
+            user_blitz_games[user_id] = {"score": 0, "total": 0, "current_q": "", "current_a": "", "waiting_for_ans": False}
+        
+        wait_msg = bot.send_message(message.chat.id, "🤖 *ИИ генерирует вопрос по школьной программе...*", parse_mode="Markdown")
+        q_data = generate_blitz_question()
+        
+        user_blitz_games[user_id]["current_q"] = q_data["question"]
+        user_blitz_games[user_id]["current_a"] = q_data["answer"]
+        user_blitz_games[user_id]["waiting_for_ans"] = True
+        
+        try:
+            bot.delete_message(message.chat.id, wait_msg.message_id)
+        except Exception:
+            pass
+
+        markup = types.ReplyKeyboardMarkup(resize_keyboard=True)
+        markup.row("🛑 Завершить блиц")
+        
+        msg_txt = f"🎯 **Блиц-Вопрос** ({q_data['subject']}):\n\n❓ {q_data['question']}\n\n✍️ *Напиши свой ответ текстом в чат:*"
+        bot.send_message(message.chat.id, msg_txt, parse_mode="Markdown", reply_markup=markup)
+        return
+
+    # Админ-Панели
     if text == "🛠 Панель Админа" and (user_id == OWNER_ID or user_id in admins):
         bot.send_message(message.chat.id, "🛠 Панель Администратора", reply_markup=get_admin_panel_keyboard())
         return
@@ -619,7 +716,7 @@ def handle_message(message):
     bot.send_message(message.chat.id, ai_response, reply_markup=get_reels_inline_buttons())
 
 # ==========================================
-# 8. ЗАПУСК БОТА
+# 9. ЗАПУСК БОТА
 # ==========================================
 if __name__ == "__main__":
     print("Запуск обновленного бота Барсбек...")
