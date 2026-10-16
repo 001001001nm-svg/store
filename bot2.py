@@ -39,7 +39,8 @@ threading.Thread(target=run_web_server, daemon=True).start()
 # ==========================================
 # 2. ИНИЦИАЛИЗАЦИЯ И ХРАНЕНИЕ ДАННЫХ
 # ==========================================
-TELEGRAM_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "8891087735:AAEv55LG3oQwkEJMN_LBUnEgM-ZMq7qwPf4")
+# Обновленный Telegram Токен:
+TELEGRAM_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "8891087735:AAFPy02IyHL-1dhu5QTxiMIWAnq3C8g1Vmo")
 OPENROUTER_KEY = os.environ.get("OPENROUTER_KEY", "")
 UNSPLASH_KEY = os.environ.get("UNSPLASH_ACCESS_KEY", "odaMYOHO8tsFHyGe_Q8-0EZtab_NohgvOYRBEvtIkRE")
 TAVILY_KEY = os.environ.get("TAVILY_API_KEY", "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")
