@@ -471,11 +471,14 @@ def handle_message(message):
         except Exception:
             pass
 
+        correct_ans_str = user_game["current_a"]
+        comment_str = res.get("comment", f"Правильный ответ: {correct_ans_str}")
+
         if res.get("is_correct"):
             user_game["score"] += 1
-            res_msg = f"✅ **Правильно!**\n\n💬 {res.get('comment', '')}\n\n🏆 Счёт: **{user_game['score']}/{user_game['total']}**"
+            res_msg = f"✅ **Правильно!**\n\n💬 {comment_str}\n\n🏆 Счёт: **{user_game['score']}/{user_game['total']}**"
         else:
-            res_msg = f"❌ **Несовсем верно.**\n\n💬 {res.get('comment', f'Правильный ответ: {user_game[\"current_a\"]}')}\n\n🏆 Счёт: **{user_game['score']}/{user_game['total']}**"
+            res_msg = f"❌ **Не совсем верно.**\n\n💬 {comment_str}\n\n🏆 Счёт: **{user_game['score']}/{user_game['total']}**"
 
         markup = types.ReplyKeyboardMarkup(resize_keyboard=True)
         markup.row("🚀 Следующий вопрос", "🛑 Завершить блиц")
