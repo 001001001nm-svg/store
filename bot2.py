@@ -12,14 +12,14 @@ import requests
 from tavily import TavilyClient
 
 # ==========================================
-# 1. МИНИ ВЕБ-СЕРВЕР ДЛЯ RENDER (Без 502 Bad Gateway)
+# 1. МИНИ ВЕБ-СЕРВЕР ДЛЯ RENDER (Статус UP)
 # ==========================================
 class SimpleHTTPRequestHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200)
         self.send_header("Content-type", "text/html; charset=utf-8")
         self.end_headers()
-        self.wfile.write(b"<html><body><h1>MyProfi KG Bot Active & Running!</h1></body></html>")
+        self.wfile.write(b"<html><body><h1>Barsbek Bot Active & Running!</h1></body></html>")
 
     def do_HEAD(self):
         self.send_response(200)
@@ -101,7 +101,7 @@ def search_web(query):
             return ""
         snippets = []
         for item in results:
-            snippets.append(f"Title: {item.get('title')}\nInfo: {item.get('content')}")
+            snippets.append(f"Заголовок: {item.get('title')}\nИнформация: {item.get('content')}")
         return "\n\n".join(snippets)
     except Exception as e:
         print(f"Ошибка поиска: {e}")
@@ -150,7 +150,7 @@ def ask_ai(prompt, system_instruction):
             "Authorization": f"Bearer {OPENROUTER_KEY}",
             "Content-Type": "application/json",
             "HTTP-Referer": "https://render.com",
-            "X-Title": "MyProfi KG Bot"
+            "X-Title": "Barsbek Bot"
         }
         
         models_to_try = [
@@ -182,16 +182,16 @@ def ask_ai(prompt, system_instruction):
                 continue
 
     # Динамический запасной ответ строго под указанную страну
-    country_tag = prompt.split(" country: ")[-1] if " country: " in prompt else "Кыргызстан"
+    country_tag = prompt.split("Страна: ")[-1] if "Страна: " in prompt else "Кыргызстан"
     return (
-        f"🏛️ List of Top Universities & Passing Scores in {country_tag}:\n\n"
-        f"1. Leading National University — Passing score: High / SAT 1200+ / ORT 130+\n"
-        f"2. State Technical University — Passing score: SAT 1150+ / ORT 120+\n"
-        f"3. International College of Management — Passing score: IELTS 5.5+ / Internal Exam\n"
-        f"4. Medical Academy & Health Sciences — Passing score: High biology/chemistry entrance exam\n\n"
-        f"💰 Scholarships & Grants:\n"
-        f"• Full Government Scholarship: 100% tuition covered + monthly stipend.\n"
-        f"• Merit-Based Grants: 25% - 75% fee reduction based on exam scores."
+        f"🏛️ Список ведущих учебных заведений и проходные баллы в стране {country_tag}:\n\n"
+        f"1. Главный Национальный Университет — Проходной балл: Высокий / ОРТ 130+ / SAT 1200+\n"
+        f"2. Государственный Технический Университет — Проходной балл: ОРТ 120+ / SAT 1150+\n"
+        f"3. Международный Колледж Управления — Проходной балл: Внутренний экзамен / IELTS 5.5+\n"
+        f"4. Медицинская Академия — Проходной балл: Высокие баллы профильных предметов\n\n"
+        f"💰 Стипендии и Гранты:\n"
+        f"• Государственный бюджетный грант: 100% покрытие стоимости учебы + стипендия.\n"
+        f"• Академические скидки: 25% - 75% скидка за высокие баллы экзаменов."
     )
 
 # ==========================================
@@ -309,24 +309,32 @@ def handle_callbacks(call):
         c_lang = user_data.get("lang", "🇷🇺 Русский")
 
         try:
-            bot.answer_callback_query(call.id, "⏳ Processing...")
+            bot.answer_callback_query(call.id, "⏳ Обработка...")
         except Exception:
             pass
 
         if data == "act_more_photo":
             photo_file = fetch_photo_bytes(f"{c_country} university campus student")
-            short_caption = f"🏛️ Campus view in {c_country} ✨"
+            
+            captions = {
+                "🇬🇧 English": f"🏛️ Campus view in {c_country} ✨",
+                "🇰🇬 Кыргызча": f"🏛️ {c_country} өлкөсүндөгү университеттин кампусу ✨",
+                "🇹🇷 Türkçe": f"🏛️ {c_country} ülkesindeki üniversite kampüsü ✨",
+                "🇷🇺 Русский": f"🏛️ Вид кампуса и университета в стране: {c_country} ✨"
+            }
+            short_caption = captions.get(c_lang, captions["🇷🇺 Русский"])
+            
             if photo_file:
                 try:
                     bot.send_photo(call.message.chat.id, photo=photo_file, caption=short_caption, reply_markup=get_reels_inline_buttons())
                     return
                 except Exception as e:
                     print(f"Ошибка фото: {e}")
-            bot.send_message(call.message.chat.id, "📸 Photo unavailable.", reply_markup=get_reels_inline_buttons())
+            bot.send_message(call.message.chat.id, "📸 Фото временно недоступно.", reply_markup=get_reels_inline_buttons())
             return
 
-        prompt = f"Write 1 top university in {c_country} and strictly state its minimum passing score. Selected country: {c_country}"
-        sys_prompt = f"CRITICAL: Answer EXCLUSIVELY in language: {c_lang}. Do not use Markdown. Use emojis ✨🎓."
+        prompt = f"Напишите 1 ведущий университет СТРОГО в стране {c_country} и обязательно укажите минимальный проходной балл для поступления. Выбранная страна: {c_country}"
+        sys_prompt = f"КРИТИЧЕСКИ ВАЖНО: Отвечай СТРОГО И ИСКЛЮЧИТЕЛЬНО на языке: {c_lang}. Не используй Маркдаун (*, #, _). Используй красивое оформление и эмодзи ✨🎓."
         ai_text = ask_ai(prompt, sys_prompt)
         photo_file = fetch_photo_bytes(f"{c_country} university building")
 
@@ -351,7 +359,7 @@ def start(message):
         return
 
     if not bot_enabled and user_id != OWNER_ID:
-        bot.send_message(message.chat.id, "🔴 Bot is temporarily turned off for maintenance. 🛠️")
+        bot.send_message(message.chat.id, "🔴 Бот временно выключен на техническое обслуживание. 🛠️")
         return
 
     today_str = datetime.date.today().isoformat()
@@ -360,7 +368,7 @@ def start(message):
     if user_id not in all_users:
         all_users[user_id] = {
             "username": username_str,
-            "first_name": message.from_user.first_name or "User",
+            "first_name": message.from_user.first_name or "Пользователь",
             "join_date": today_str,
             "last_active": today_str
         }
@@ -385,12 +393,12 @@ def start(message):
             "🇬🇧 English": f"Welcome back, {name}! 👋 Please choose a target country for your career & university guidance:",
             "🇰🇬 Кыргызча": f"Саламатсызбы, {name}! 👋 Окуу жана кесип тандоо үчүн өлкөнү тандаңыз:",
             "🇹🇷 Türkçe": f"Hoş geldiniz, {name}! 👋 Lütfen eğitim almak istediğiniz ülkeyi seçin:",
-            "🇷🇺 Русский": f"Здравствуйте, {name}! 👋 Выберите страну для подбора ВУЗа и профессии:"
+            "🇷🇺 Русский": f"Здравствуйте, {name}! 👋 Я Барсбек 🐆 — ваш консультант. Выберите страну для подбора ВУЗа и профессии:"
         }
         bot.send_message(message.chat.id, msgs.get(lang, msgs["🇷🇺 Русский"]), reply_markup=get_country_keyboard())
     else:
         u_data["state"] = "WAITING_FOR_LANG"
-        msg = "Welcome! 👋 Я MyProfi KG 🎓 — ваш профориентационный консультант.\n\nChoose language / Тилди тандаңыз:"
+        msg = "Здравствуйте! 👋 Я Барсбек 🐆 — ваш консультант по образованию и выбору профессии.\n\nВыберите язык / Choose language / Тилди тандаңыз:"
         bot.send_message(message.chat.id, msg, reply_markup=get_language_keyboard())
 
 @bot.message_handler(func=lambda message: True)
@@ -403,7 +411,7 @@ def handle_message(message):
         return
 
     if not bot_enabled and user_id != OWNER_ID:
-        bot.send_message(message.chat.id, "🔴 Bot is offline for maintenance.")
+        bot.send_message(message.chat.id, "🔴 Бот временно выключен на техническое обслуживание.")
         return
 
     today_str = datetime.date.today().isoformat()
@@ -412,7 +420,7 @@ def handle_message(message):
     if user_id not in all_users:
         all_users[user_id] = {
             "username": username_str,
-            "first_name": message.from_user.first_name or "User",
+            "first_name": message.from_user.first_name or "Пользователь",
             "join_date": today_str,
             "last_active": today_str
         }
@@ -483,7 +491,7 @@ def handle_message(message):
         age_prompts = {
             "🇬🇧 English": f"Nice to meet you, {text}! Please enter your age: 🔢",
             "🇰🇬 Кыргызча": f"Таанышканыма кубанычтамын, {text}! Жашыңызды жазыңыз: 🔢",
-            "🇹🇷 Türkçe": f"Tanıştığımıza memnun oldum {text}! Yaşınızı girin: 🔢",
+            "🇹🇷 Türkçe": f"Tanıştığıma memnun oldum {text}! Yaşınızı girin: 🔢",
             "🇷🇺 Русский": f"Приятно познакомиться, {text}! Укажите ваш возраст: 🔢"
         }
         bot.send_message(message.chat.id, age_prompts.get(lang, age_prompts["🇷🇺 Русский"]))
@@ -510,10 +518,10 @@ def handle_message(message):
             user_data["state"] = None
             
             welcomes = {
-                "🇬🇧 English": f"🎓 Selected country: {text}\nUse the buttons below to explore universities, scholarships, and career paths! ✨",
-                "🇰🇬 Кыргызча": f"🎓 Тандалган өлкө: {text}\nЖОЖдорду, стипендияларды жана кесиптерди көрүү үчүн менюну колдонуңуз! ✨",
-                "🇹🇷 Türkçe": f"🎓 Seçilen ülke: {text}\nÜniversiteleri, bursları ve meslekleri incelemek için aşağıdaki menüyü kullanın! ✨",
-                "🇷🇺 Русский": f"🎓 Выбрана страна: {text}\nИспользуйте меню ниже для подбора ВУЗов, стипендий и построения карьеры! ✨"
+                "🇬🇧 English": f"🎓 Selected country: {text}\nI am Barsbek 🐆 — your advisor. Use the menu below to explore universities, scholarships, and career paths! ✨",
+                "🇰🇬 Кыргызча": f"🎓 Тандалган өлкө: {text}\nМен Барсбек 🐆 — сиздин кеңешчиңизмин. ЖОЖдорду, стипендияларды жана кесиптерди көрүү үчүн менюну колдонуңуз! ✨",
+                "🇹🇷 Türkçe": f"🎓 Seçilen ülke: {text}\nBen Barsbek 🐆 — danışmanınızım. Üniversiteleri, bursları ve meslekleri incelemek için aşağıdaki menüyü kullanın! ✨",
+                "🇷🇺 Русский": f"🎓 Выбрана страна: {text}\nЯ Барсбек 🐆 — ваш консультант. Используйте меню ниже для подбора ВУЗов, стипендий и построения карьеры! ✨"
             }
             photo = fetch_photo_bytes(f"{text} architecture capital landmark")
             
@@ -530,7 +538,7 @@ def handle_message(message):
 
     # Панель Владельца
     if text == "👑 Панель Владельца" and user_id == OWNER_ID:
-        bot.send_message(message.chat.id, "👑 Панель Владельца MyProfi KG ⚙️", reply_markup=get_owner_panel_keyboard())
+        bot.send_message(message.chat.id, "👑 Панель Владельца Барсбек ⚙️", reply_markup=get_owner_panel_keyboard())
         return
 
     # Панель Админа
@@ -609,12 +617,12 @@ def handle_message(message):
 
     if text in ["🌐 Сменить язык", "🌐 Тилди алмаштыруу", "🌐 Change Language", "🌐 Dili Değiştir"]:
         user_data["state"] = "WAITING_FOR_LANG"
-        bot.send_message(message.chat.id, "Choose language / Тилди тандаңыз: 🌐", reply_markup=get_language_keyboard())
+        bot.send_message(message.chat.id, "Выберите язык / Choose language / Тилди тандаңыз: 🌐", reply_markup=get_language_keyboard())
         return
 
     if text in ["🌍 Сменить страну", "🌍 Өлкөнү алмаштыруу", "🌍 Change Country", "🌍 Ülkeyi Değiştir"]:
         user_data["state"] = "WAITING_FOR_COUNTRY"
-        bot.send_message(message.chat.id, "Choose target country / Өлкөнү тандаңыз: 🌍", reply_markup=get_country_keyboard())
+        bot.send_message(message.chat.id, "Выберите страну для обучения / Choose target country: 🌍", reply_markup=get_country_keyboard())
         return
 
     if text in ["🔄 Начать заново", "🔄 Жаңы диалог", "🔄 Restart", "🔄 Yeniden Başlat"]:
@@ -624,10 +632,10 @@ def handle_message(message):
     # Кнопка "🎯 Мой путь"
     if text in ["🎯 Мой путь", "🎯 My Path", "🎯 Benim Yolum"]:
         path_msgs = {
-            "🇬🇧 English": "🎯 **My Career Path** ✨\n\nTell me: What subjects or activities do you enjoy most? (e.g., programming, drawing, logic, helping people, medicine). I will analyze your strengths and suggest the best professions & university majors in " + c_country + "!",
-            "🇰🇬 Кыргызча": "🎯 **Менин жолум** ✨\n\nМага жазыңыз: Кайсы сабактарды же иштерди жакшы көрөсүз? (мисалы: программалоо, сүрөт тартуу, логика, медицина). Мен сизге " + c_country + " өлкөсүндөгү эң ылайыктуу кесиптерди жана факультеттерди тандап берем!",
-            "🇹🇷 Türkçe": "🎯 **Benim Yolum** ✨\n\nBana yazın: Hangi dersleri veya aktiviteleri seviyorsunuz? Sizin için " + c_country + " ülkesindeki en uygun meslekleri ve üniversite bölümlerini analiz edeyim!",
-            "🇷🇺 Русский": "🎯 **Мой карьерный путь** ✨\n\nНапишите мне: Какие предметы или занятия вам нравятся больше всего? (например: программирование, рисование, логика, бизнес, медицина). Я проанализирую ваши сильные стороны и подберу подходящие профессии и факультеты в стране: " + c_country + "!"
+            "🇬🇧 English": "🎯 **My Career Path** ✨\n\nTell me: What subjects or activities do you enjoy most? (e.g., programming, drawing, logic, helping people, medicine). I am Barsbek 🐆, I will analyze your strengths and suggest the best professions & university majors in " + c_country + "!",
+            "🇰🇬 Кыргызча": "🎯 **Менин жолум** ✨\n\nМага жазыңыз: Кайсы сабактарды же иштерди жакшы көрөсүз? (мисалы: программалоо, сүрөт тартуу, логика, медицина). Мен Барсбек 🐆, сизге " + c_country + " өлкөсүндөгү эң ылайыктуу кесиптерди жана факультеттерди тандап берем!",
+            "🇹🇷 Türkçe": "🎯 **Benim Yolum** ✨\n\nBana yazın: Hangi dersleri veya aktiviteleri seviyorsunuz? Ben Barsbek 🐆, sizin için " + c_country + " ülkesindeki en uygun meslekleri ve üniversite bölümlerini analiz edeyim!",
+            "🇷🇺 Русский": "🎯 **Мой карьерный путь** ✨\n\nНапишите мне: Какие предметы или занятия вам нравятся больше всего? (например: программирование, рисование, логика, бизнес, медицина). Я Барсбек 🐆, проанализирую ваши сильные стороны и подберу подходящие профессии и факультеты в стране: " + c_country + "!"
         }
         bot.send_message(message.chat.id, path_msgs.get(lang, path_msgs["🇷🇺 Русский"]), parse_mode="Markdown")
         return
@@ -642,37 +650,38 @@ def handle_message(message):
     wait_msg = bot.send_message(message.chat.id, wait_msgs.get(lang, wait_msgs["🇷🇺 Русский"]))
 
     if "Стипендии" in text or "Гранты" in text or "Burslar" in text or "Scholarships" in text:
-        prompt_query = f"List ALL available scholarships, government grants, and tuition coverage for studying in country: {c_country}. State exact monthly payouts and requirements. Selected country: {c_country}"
-        search_query = f"scholarships grants tuition fees {c_country} 2026"
+        prompt_query = f"Напишите ВСЕ доступные стипендии, государственные гранты и бесплатное обучение СТРОГО в стране {c_country}. Укажите точные ежемесячные выплаты и условия. Выбранная страна: {c_country}"
+        search_query = f"стипендии гранты обучение {c_country} 2026"
         query_photo = f"{c_country} university scholarship diploma"
     elif "ВУЗ" in text or "Колледж" in text or "ЖОЖ" in text or "Üniversiteler" in text or "Universities" in text:
-        prompt_query = f"List ALL major top universities, institutes and colleges located STRICTLY in country: {c_country}. MANDATORY: Next to EACH university, write its minimum passing scores (ORT / SAT / HSK / YÖS / Exam score). Selected country: {c_country}"
-        search_query = f"list of top universities passing scores {c_country} 2026"
+        prompt_query = f"Перечислите ВСЕ ведущие университеты, институты и колледжи СТРОГО находящиеся в стране {c_country}. ОБЯЗАТЕЛЬНО: Напротив КАЖДОГО университета напишите минимальный проходной балл (ОРТ / SAT / HSK / YÖS / Внутренний экзамен). Выбранная страна: {c_country}"
+        search_query = f"список ВУЗов проходные баллы {c_country} 2026"
         query_photo = f"{c_country} top university campus building"
     elif "Лайфхак" in text or "Талаптар" in text or "Advice" in text or "Tavsiyeler" in text:
-        prompt_query = f"Provide career guidance advice and admission requirements for studying in country: {c_country}. Selected country: {c_country}"
-        search_query = f"admission requirements study in {c_country} 2026"
+        prompt_query = f"Дайте рекомендации по профориентации и условия поступления в ВУЗы страны {c_country}. Выбранная страна: {c_country}"
+        search_query = f"условия поступления ВУЗы {c_country} 2026"
         query_photo = f"students studying preparation university"
     elif "Документ" in text or "Document" in text or "Belge" in text:
-        prompt_query = f"List mandatory documents required for university admission in country: {c_country}. Selected country: {c_country}"
-        search_query = f"university application documents required {c_country} 2026"
+        prompt_query = f"Напишите список обязательных документов для поступления в ВУЗы страны {c_country}. Выбранная страна: {c_country}"
+        search_query = f"документы для поступления {c_country} 2026"
         query_photo = f"passport visa application documents"
     else:
-        prompt_query = f"User message: {text}. Target country for study: {c_country}."
-        search_query = f"{text} {c_country} career university"
+        prompt_query = f"Сообщение пользователя: {text}. Целевая страна для учебы: {c_country}."
+        search_query = f"{text} {c_country} карьера ВУЗ"
         query_photo = f"{c_country} university student career"
 
     web_data = search_web(search_query)
 
     sys_prompt = (
-        f"STRICT LANGUAGE RULE: You MUST write your FULL response STRICTLY AND EXCLUSIVELY in language: {lang}.\n"
-        f"TARGET COUNTRY: {c_country}.\n"
-        f"FRESH WEB DATA:\n{web_data}\n\n"
-        f"INSTRUCTIONS:\n"
-        f"1. UNIVERSITIES & SCORES: Give universities ONLY for country: {c_country}! ALWAYS write minimum passing scores (e.g., ORT / SAT / HSK / GPA) next to EACH university.\n"
-        f"2. SCHOLARSHIPS: Give detailed grant conditions for {c_country}.\n"
-        f"3. EMOJIS: Use clean emojis (🎓, 🏛️, 💰, 📌, ✅, ✨, 🚀) to make text scannable and beautiful.\n"
-        f"4. NO MARKDOWN: Strictly avoid markdown symbols (*, #, _, `) to prevent formatting crashes in Telegram."
+        f"КРИТИЧЕСКОЕ ПРАВИЛО ЯЗЫКА: Ты обязан писать весь свой ответ СТРОГО И ИСКЛЮЧИТЕЛЬНО на языке: {lang}.\n"
+        f"Ты Барсбек 🐆 — профессиональный консультант по образованию.\n"
+        f"ЦЕЛЕВАЯ СТРАНА: {c_country}.\n"
+        f"СВЕЖИЕ ДАННЫЕ ИЗ СЕТИ:\n{web_data}\n\n"
+        f"ИНСТРУКЦИИ:\n"
+        f"1. ВУЗЫ И БАЛЛЫ: Пиши ВУЗы СТРОГО находящиеся в стране: {c_country}! ВСЕГДА у каждого ВУЗа указывай минимальный проходной балл.\n"
+        f"2. СТИПЕНДИИ: Давай подробную информацию о грантах и выплатах в стране {c_country}.\n"
+        f"3. ЭМОДЗИ: Используй красивое оформление с эмодзи (🎓, 🏛️, 💰, 📌, ✅, ✨, 🚀).\n"
+        f"4. БЕЗ МАРКДАУНА: Категорически не используй символы (*, #, _, `), чтобы сообщение в Telegram выводилось идеально."
     )
 
     ai_response = ask_ai(prompt_query, sys_prompt)
@@ -696,5 +705,5 @@ def handle_message(message):
 # 7. ЗАПУСК БОТА
 # ==========================================
 if __name__ == "__main__":
-    print("Запуск MyProfi KG...")
+    print("Запуск Барсбек...")
     bot.infinity_polling(timeout=20, long_polling_timeout=5)
