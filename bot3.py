@@ -8,6 +8,7 @@ import re
 import sqlite3
 import time
 from contextlib import closing
+from datetime import datetime, timedelta, timezone
 
 from aiohttp import web
 from aiogram import BaseMiddleware, Bot, Dispatcher, F, types
@@ -80,6 +81,28 @@ def init_db():
                 # на случай, если таблицы остались от старой версии
                 ensure_columns(conn, "products", {"unit": "TEXT", "price": "REAL", "photo": "TEXT", "discount": "TEXT", "category": "TEXT"})
                 ensure_columns(conn, "advertisements", {"content": "TEXT", "photo": "TEXT"})
+                conn.execute("""
+                    CREATE TABLE IF NOT EXISTS orders (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        name TEXT,
+                        phone TEXT,
+                        address TEXT,
+                        items TEXT,
+                        subtotal REAL,
+                        delivery REAL,
+                        total REAL,
+                        status TEXT DEFAULT 'new',
+                        created_at TEXT,
+                        done_at TEXT
+                    )
+                """)
+                conn.execute("""
+                    CREATE TABLE IF NOT EXISTS order_msgs (
+                        order_id INTEGER,
+                        chat_id INTEGER,
+                        message_id INTEGER
+                    )
+                """)
     except Exception as e:
         logging.error(f"DB Error: {e}")
 
@@ -168,6 +191,7 @@ def main_menu_kb(is_owner, is_admin):
     if is_admin or is_owner:
         kb.append([types.KeyboardButton(text="📦 Управление товарами"), types.KeyboardButton(text="📁 Каталоги")])
         kb.append([types.KeyboardButton(text="🏷 Скидки"), types.KeyboardButton(text="📢 Реклама")])
+        kb.append([types.KeyboardButton(text="📋 Актуальные заказы"), types.KeyboardButton(text="🗃 Архив заказов")])
     if is_owner:
         kb.append([types.KeyboardButton(text="👑 Панель владельца")])
     return types.ReplyKeyboardMarkup(keyboard=kb, resize_keyboard=True)
@@ -288,7 +312,7 @@ def products_view():
     rows = db_all("SELECT id, name, unit, price, discount, category FROM products ORDER BY id")
     items = []
     for pid, name, unit, price, disc, cat in rows:
-        line = f"{name} — {price} руб./{unit or 'шт'}"
+        line = f"{name} — {price} сом/{unit or 'шт'}"
         if disc:
             line += f" (скидка {disc})"
         if cat:
@@ -634,6 +658,132 @@ async def delete_admin(call: types.CallbackQuery):
     await refresh_inline(call, text, kb)
 
 # ============================================================
+#  🛒 ЗАКАЗЫ (приходят с сайта, управление через бота)
+# ============================================================
+DELIVERY_FEE = 150
+LOCAL_TZ = timezone(timedelta(hours=6))
+
+def now_local():
+    return datetime.now(LOCAL_TZ)
+
+def order_text(row):
+    oid, name, phone, address, items, delivery, total, created = row
+    try:
+        dt = datetime.strptime(created, "%Y-%m-%d %H:%M:%S").strftime("%d.%m.%Y %H:%M")
+    except Exception:
+        dt = created
+    return (
+        f"🛒 Заказ №{oid}\n🕒 {dt}\n\n"
+        f"👤 {name}\n📞 {phone}\n📍 {address}\n\n"
+        f"{items}\n\n"
+        f"Доставка: {fmt_price(delivery)} сом\n"
+        f"💰 Итого: {fmt_price(total)} сом"
+    )
+
+def done_kb(order_id):
+    return types.InlineKeyboardMarkup(inline_keyboard=[[
+        types.InlineKeyboardButton(text="✅ Заказ выполнен", callback_data=f"done:{order_id}")
+    ]])
+
+ORDER_FIELDS = "id, name, phone, address, items, delivery, total, created_at"
+
+def track_order_msg(order_id, chat_id, message_id):
+    db_run("INSERT INTO order_msgs (order_id, chat_id, message_id) VALUES (?, ?, ?)", (order_id, chat_id, message_id))
+
+async def notify_admins(order_id):
+    rows = db_all(f"SELECT {ORDER_FIELDS} FROM orders WHERE id = ?", (order_id,))
+    if not rows:
+        return
+    text = order_text(rows[0])
+    ids = {SUPER_ADMIN_ID} | {r[0] for r in db_all("SELECT user_id FROM users WHERE is_admin = 1")}
+    for chat_id in ids:
+        try:
+            sent = await bot.send_message(chat_id, text, reply_markup=done_kb(order_id))
+            track_order_msg(order_id, chat_id, sent.message_id)
+        except Exception as e:
+            logging.warning(f"Не удалось отправить заказ {order_id} в чат {chat_id}: {e}")
+
+@dp.message(F.text == "📋 Актуальные заказы")
+async def active_orders(message: types.Message, state: FSMContext):
+    if not can_manage(message.from_user.id):
+        return
+    await state.clear()
+    rows = db_all(f"SELECT {ORDER_FIELDS} FROM orders WHERE status = 'new' ORDER BY id")
+    if not rows:
+        await message.answer("Актуальных заказов нет.")
+        return
+    for row in rows:
+        sent = await message.answer(order_text(row), reply_markup=done_kb(row[0]))
+        track_order_msg(row[0], message.chat.id, sent.message_id)
+        await asyncio.sleep(0.05)
+
+@dp.callback_query(F.data.startswith("done:"))
+async def order_done(call: types.CallbackQuery):
+    if not can_manage(call.from_user.id):
+        await call.answer("Нет доступа", show_alert=True)
+        return
+    order_id = int(call.data.split(":")[1])
+    db_run(
+        "UPDATE orders SET status = 'done', done_at = ? WHERE id = ? AND status = 'new'",
+        (now_local().strftime("%Y-%m-%d %H:%M:%S"), order_id)
+    )
+    msgs = db_all("SELECT chat_id, message_id FROM order_msgs WHERE order_id = ?", (order_id,))
+    deleted_current = False
+    for chat_id, msg_id in msgs:
+        try:
+            await bot.delete_message(chat_id, msg_id)
+            if call.message and chat_id == call.message.chat.id and msg_id == call.message.message_id:
+                deleted_current = True
+        except Exception as e:
+            logging.info(f"delete skipped: {e}")
+    db_run("DELETE FROM order_msgs WHERE order_id = ?", (order_id,))
+    if not deleted_current and call.message:
+        try:
+            await call.message.delete()
+        except Exception:
+            try:
+                await call.message.edit_text(f"✅ Заказ №{order_id} выполнен и перенесён в архив.")
+            except Exception:
+                pass
+    await call.answer("Заказ перенесён в архив")
+
+def archive_chunks(rows):
+    chunks, current, last_date = [], "🗃 Архив заказов (последние 3 дня)\n", None
+    for oid, name, phone, address, items, delivery, total, created in rows:
+        day = created[:10]
+        block = ""
+        if day != last_date:
+            try:
+                pretty = datetime.strptime(day, "%Y-%m-%d").strftime("%d.%m.%Y")
+            except Exception:
+                pretty = day
+            block += f"\n📅 {pretty}\n"
+            last_date = day
+        block += f"\n№{oid} · {created[11:16]}\n👤 {name} · 📞 {phone}\n📍 {address}\n{items}\n💰 {fmt_price(total)} сом\n"
+        if len(current) + len(block) > 3800:
+            chunks.append(current)
+            current, last_date = block, None
+        else:
+            current += block
+    if current:
+        chunks.append(current)
+    return chunks
+
+@dp.message(F.text == "🗃 Архив заказов")
+async def archive_orders(message: types.Message, state: FSMContext):
+    if not can_manage(message.from_user.id):
+        return
+    await state.clear()
+    cutoff = (now_local() - timedelta(days=3)).strftime("%Y-%m-%d %H:%M:%S")
+    db_run("DELETE FROM orders WHERE status = 'done' AND created_at < ?", (cutoff,))
+    rows = db_all(f"SELECT {ORDER_FIELDS} FROM orders WHERE status = 'done' ORDER BY created_at ASC, id ASC")
+    if not rows:
+        await message.answer("Архив пуст. Здесь хранятся выполненные заказы за последние 3 дня.")
+        return
+    for chunk in archive_chunks(rows):
+        await message.answer(chunk)
+
+# ============================================================
 #  ВЕБ-СЕРВЕР И КРАСИВАЯ ВИТРИНА С КОРЗИНОЙ И ДОСТАВКОЙ
 # ============================================================
 def esc(value):
@@ -714,28 +864,38 @@ PAGE_HEAD = """<!DOCTYPE html>
         .cart-header h3 { margin: 0; font-size: 20px; }
         .close-cart { background: none; border: none; font-size: 24px; cursor: pointer; color: #64748b; }
 
-        /* БАННЕР БЕСПЛАТНОЙ ДОСТАВКИ В КОРЗИНЕ */
-        .delivery-promo { background: linear-gradient(135deg, #fff3cd, #ffe8a1); border: 1px solid #ffe082; padding: 14px 18px; margin: 15px 20px 5px 20px; border-radius: 12px; font-size: 13px; color: #856404; font-weight: 600; box-shadow: 0 2px 6px rgba(0,0,0,0.03); }
-        .delivery-progress-bar { background: #ffe082; height: 6px; border-radius: 3px; margin-top: 8px; overflow: hidden; }
-        .delivery-progress-fill { background: #27ae60; height: 100%; width: 0%; transition: width 0.3s; }
-
-        .cart-items { flex: 1; overflow-y: auto; padding: 15px 20px; }
+        .cart-items { flex: 1; overflow-y: auto; padding: 15px 20px; min-height: 80px; }
         .cart-item { display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px; padding-bottom: 15px; border-bottom: 1px solid #f1f5f9; }
         .cart-item-title { font-weight: 600; font-size: 14px; margin-bottom: 4px; color: #1e293b; }
         .cart-item-price { color: #4f46e5; font-weight: 700; font-size: 14px; }
         .cart-controls { display: flex; align-items: center; gap: 8px; }
         .qty-btn { background: #f1f5f9; border: none; width: 26px; height: 26px; border-radius: 6px; font-weight: bold; cursor: pointer; }
 
-        .cart-footer { padding: 20px; border-top: 1px solid #f1f5f9; background: #fafafa; }
+        .cart-footer { padding: 20px; border-top: 1px solid #f1f5f9; background: #fafafa; max-height: 70vh; overflow-y: auto; }
         .cart-summary-line { display: flex; justify-content: space-between; margin-bottom: 8px; font-size: 14px; color: #64748b; }
         .cart-summary-total { display: flex; justify-content: space-between; margin-top: 12px; font-size: 18px; font-weight: 700; color: #1e293b; border-top: 1px solid #e2e8f0; padding-top: 10px; }
-        .checkout-btn { background: #4f46e5; color: white; border: none; width: 100%; padding: 14px; border-radius: 12px; font-weight: 700; font-size: 16px; margin-top: 15px; cursor: pointer; transition: background 0.2s; }
+        .form-title { font-size: 13px; font-weight: 700; margin: 14px 0 8px; color: #1e293b; }
+        .form-input { width: 100%; padding: 10px 12px; border: 1px solid #cbd5e1; border-radius: 10px; font-size: 14px; margin-bottom: 8px; outline: none; font-family: inherit; background: white; }
+        .form-input:focus { border-color: #4f46e5; }
+        .form-error { color: #e74c3c; font-size: 13px; margin-top: 4px; }
+        .checkout-btn { background: #4f46e5; color: white; border: none; width: 100%; padding: 14px; border-radius: 12px; font-weight: 700; font-size: 16px; margin-top: 12px; cursor: pointer; transition: background 0.2s; }
         .checkout-btn:hover { background: #3730a3; }
+        .checkout-btn:disabled { opacity: 0.6; cursor: wait; }
+
+        /* ОКНО С ИНФОРМАЦИЕЙ */
+        .modal-overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.5); display: none; align-items: center; justify-content: center; z-index: 2000; padding: 20px; }
+        .modal-overlay.open { display: flex; }
+        .modal { background: white; color: #1e293b; max-width: 520px; width: 100%; border-radius: 16px; padding: 26px; max-height: 85vh; overflow-y: auto; box-shadow: 0 20px 40px rgba(0,0,0,0.25); }
+        .modal h3 { margin: 0 0 14px 0; }
+        .modal p { line-height: 1.6; font-size: 15px; color: #475569; white-space: pre-line; margin: 0 0 18px 0; }
+        .modal button { background: #4f46e5; color: white; border: none; padding: 10px 22px; border-radius: 10px; font-weight: 600; cursor: pointer; }
 
         footer { background: #4f46e5; color: white; padding: 40px 20px; margin-top: 60px; }
         .footer-content { max-width: 1200px; margin: 0 auto; display: flex; justify-content: space-between; flex-wrap: wrap; gap: 30px; }
         .footer-col h4 { margin-top: 0; margin-bottom: 15px; font-size: 16px; font-weight: 700; }
         .footer-col p, .footer-col a { font-size: 14px; opacity: 0.9; color: white; text-decoration: none; display: block; margin-bottom: 8px; }
+        .footer-col a { cursor: pointer; }
+        .footer-col a:hover { text-decoration: underline; }
         .footer-bottom { text-align: center; margin-top: 30px; font-size: 13px; opacity: 0.8; border-top: 1px solid rgba(255,255,255,0.2); padding-top: 15px; }
     </style>
 </head>
@@ -759,7 +919,7 @@ CUBE_HTML = """<div class="cube-scene"><div class="cube">
 <div class="f4">🛒</div><div class="f5">⭐</div><div class="f6">🚚</div>
 </div></div>"""
 
-PAGE_MIDDLE = """
+PAGE_MIDDLE = r"""
         </div>
     </div>
 
@@ -771,15 +931,6 @@ PAGE_MIDDLE = """
             <button class="close-cart" onclick="closeCart()">&times;</button>
         </div>
 
-        <!-- БАННЕР БЕСПЛАТНОЙ ДОСТАВКИ -->
-        <div class="delivery-promo" id="deliveryPromo">
-            🚚 Заказ от <b>5000 руб.</b> — доставка <span style="color: #27ae60; font-weight:700;">БЕСПЛАТНО!</span>
-            <div class="delivery-progress-bar">
-                <div class="delivery-progress-fill" id="deliveryProgressFill"></div>
-            </div>
-            <div id="deliveryPromoText" style="margin-top: 5px; font-size: 11px; opacity: 0.9;">Добавьте товаров для бесплатной доставки!</div>
-        </div>
-
         <div class="cart-items" id="cartItems">
             <p style="text-align: center; color: #94a3b8; margin-top: 40px;">Корзина пуста</p>
         </div>
@@ -787,17 +938,33 @@ PAGE_MIDDLE = """
         <div class="cart-footer">
             <div class="cart-summary-line">
                 <span>Товары:</span>
-                <span id="subtotalPrice">0 руб.</span>
+                <span id="subtotalPrice">0 сом</span>
             </div>
             <div class="cart-summary-line">
                 <span>Доставка:</span>
-                <span id="deliveryPrice">150 руб.</span>
+                <span id="deliveryPrice">0 сом</span>
             </div>
             <div class="cart-summary-total">
                 <span>Итого:</span>
-                <span id="totalPrice">150 руб.</span>
+                <span id="totalPrice">0 сом</span>
             </div>
-            <button class="checkout-btn" onclick="checkout()">Оформить заказ</button>
+
+            <div class="form-title">Данные для доставки</div>
+            <input class="form-input" id="custName" type="text" placeholder="Ваше имя" maxlength="50" autocomplete="name">
+            <input class="form-input" id="custPhone" type="tel" placeholder="Телефон: +996 700 245 781" maxlength="20" autocomplete="tel">
+            <input class="form-input" id="custAddress" type="text" placeholder="Адрес доставки (улица, дом, квартира)" maxlength="200" autocomplete="street-address">
+            <div class="form-error" id="formError"></div>
+
+            <button class="checkout-btn" id="checkoutBtn" onclick="checkout()">Оформить заказ</button>
+        </div>
+    </div>
+
+    <!-- ОКНО С ИНФОРМАЦИЕЙ -->
+    <div class="modal-overlay" id="infoModal" onclick="if(event.target===this) closeModal()">
+        <div class="modal">
+            <h3 id="modalTitle"></h3>
+            <p id="modalText"></p>
+            <button onclick="closeModal()">Закрыть</button>
         </div>
     </div>
 
@@ -805,18 +972,18 @@ PAGE_MIDDLE = """
         <div class="footer-content">
             <div class="footer-col">
                 <h4>Магазин</h4>
-                <p>Все товары прямо к вашей двери. Быстрая доставка и лучшая цена.</p>
+                <p>Магазин, где есть всё: от продуктов до товаров для дома. Быстрая доставка прямо к вашей двери.</p>
             </div>
             <div class="footer-col">
-                <h4>Покупателям</h4>
-                <a href="#">О нас</a>
-                <a href="#">Как сделать заказ</a>
-                <a href="#">Доставка и оплата</a>
+                <h4>Информация</h4>
+                <a onclick="showInfo('about')">О нас</a>
+                <a onclick="showInfo('order')">Как сделать заказ</a>
+                <a onclick="showInfo('delivery')">Доставка и оплата</a>
             </div>
             <div class="footer-col">
                 <h4>Контакты</h4>
                 <p>📞 +7 (900) 000-00-00</p>
-                <p>📍 Доставка по всей РФ</p>
+                <p>📍 Доставка по городу</p>
             </div>
         </div>
         <div class="footer-bottom">
@@ -825,7 +992,48 @@ PAGE_MIDDLE = """
     </footer>
 
     <script>
+        const DELIVERY_FEE = __DELIVERY__;
         let cart = [];
+
+        const INFO = {
+            about: ['О нас', 'Магазин — это место, где можно купить всё, что нужно: продукты, товары для дома, бытовую химию, канцелярию, детские товары и многое другое.\n\nМы собрали в одном магазине то, что требуется каждый день, чтобы вам не приходилось ездить по разным точкам. Ассортимент постоянно пополняется, а заказ мы привозим прямо к вашей двери.'],
+            order: ['Как сделать заказ', '1. Найдите нужный товар через поиск или выберите каталог.\n2. Нажмите «В корзину» на карточке товара.\n3. Откройте корзину, проверьте количество и укажите имя, номер телефона и адрес доставки.\n4. Нажмите «Оформить заказ» — мы получим его сразу и свяжемся с вами для подтверждения.'],
+            delivery: ['Доставка и оплата', `Мы доставляем заказы по городу прямо к двери. Стоимость доставки — ${DELIVERY_FEE} сом.\n\nОплата производится при получении заказа. Номер телефона нужен, чтобы курьер мог с вами связаться, поэтому указывайте действующий номер.`]
+        };
+
+        function showModal(title, text) {
+            document.getElementById('modalTitle').innerText = title;
+            document.getElementById('modalText').innerText = text;
+            document.getElementById('infoModal').classList.add('open');
+        }
+        function closeModal() { document.getElementById('infoModal').classList.remove('open'); }
+        function showInfo(key) { showModal(INFO[key][0], INFO[key][1]); }
+
+        function escapeHtml(s) {
+            return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+        }
+        function money(x) { return Math.round(x * 100) / 100; }
+
+        // Проверка номера телефона Кыргызстана: +996 XXX XXX XXX
+        const KG_PREFIXES = new Set(['755', '880', '990', '995', '999', '222']);
+        for (let i = 500; i <= 509; i++) KG_PREFIXES.add(String(i));
+        for (let i = 550; i <= 559; i++) KG_PREFIXES.add(String(i));
+        for (let i = 700; i <= 709; i++) KG_PREFIXES.add(String(i));
+        for (let i = 770; i <= 779; i++) KG_PREFIXES.add(String(i));
+
+        function normalizePhone(raw) {
+            let d = (raw || '').replace(/\D/g, '');
+            let nine = null;
+            if (d.length === 12 && d.startsWith('996')) nine = d.slice(3);
+            else if (d.length === 10 && d.startsWith('0')) nine = d.slice(1);
+            else if (d.length === 9) nine = d;
+            if (!nine) return null;
+            if (!KG_PREFIXES.has(nine.slice(0, 3))) return null;
+            let rest = nine.slice(3);
+            if (/^(\d)\1+$/.test(rest)) return null;
+            if ('0123456789'.includes(rest) || '9876543210'.includes(rest)) return null;
+            return '+996' + nine;
+        }
 
         function addToCart(id, name, price, unit) {
             let item = cart.find(i => i.id === id);
@@ -852,40 +1060,14 @@ PAGE_MIDDLE = """
         function updateCart() {
             let cartItemsDiv = document.getElementById('cartItems');
             let badge = document.getElementById('cartBadge');
-            let subtotalSpan = document.getElementById('subtotalPrice');
-            let deliverySpan = document.getElementById('deliveryPrice');
-            let totalSpan = document.getElementById('totalPrice');
-            let progressFill = document.getElementById('deliveryProgressFill');
-            let promoText = document.getElementById('deliveryPromoText');
-
             let totalQty = cart.reduce((sum, item) => sum + item.qty, 0);
-            let subtotal = cart.reduce((sum, item) => sum + (item.price * item.qty), 0);
-            subtotal = Math.round(subtotal * 100) / 100;
-            
+            let subtotal = money(cart.reduce((sum, item) => sum + (item.price * item.qty), 0));
+            let deliveryFee = subtotal === 0 ? 0 : DELIVERY_FEE;
+
             badge.innerText = totalQty;
-
-            // Расчет доставки +150 руб. если менее 5000 руб.
-            let deliveryFee = subtotal >= 5000 || subtotal === 0 ? 0 : 150;
-            let total = subtotal + deliveryFee;
-
-            // Обновление прогресс-бара доставки
-            let progress = Math.min((subtotal / 5000) * 100, 100);
-            progressFill.style.width = progress + '%';
-
-            if (subtotal >= 5000) {
-                promoText.innerHTML = "🎉 У вас <b>БЕСПЛАТНАЯ ДОСТАВКА!</b>";
-                deliverySpan.innerHTML = "<span style='color:#27ae60; font-weight:bold;'>Бесплатно</span>";
-            } else if (subtotal > 0) {
-                let diff = Math.round((5000 - subtotal) * 100) / 100;
-                promoText.innerHTML = `Добавьте товаров еще на <b>${diff} руб.</b> до бесплатной доставки!`;
-                deliverySpan.innerText = "+150 руб.";
-            } else {
-                promoText.innerText = "Добавьте товаров для бесплатной доставки!";
-                deliverySpan.innerText = "150 руб.";
-            }
-
-            subtotalSpan.innerText = subtotal + " руб.";
-            totalSpan.innerText = (subtotal === 0 ? 0 : total) + " руб.";
+            document.getElementById('subtotalPrice').innerText = subtotal + ' сом';
+            document.getElementById('deliveryPrice').innerText = deliveryFee + ' сом';
+            document.getElementById('totalPrice').innerText = money(subtotal + deliveryFee) + ' сом';
 
             if (cart.length === 0) {
                 cartItemsDiv.innerHTML = '<p style="text-align: center; color: #94a3b8; margin-top: 40px;">Корзина пуста</p>';
@@ -897,8 +1079,8 @@ PAGE_MIDDLE = """
                 cartItemsDiv.innerHTML += `
                     <div class="cart-item">
                         <div>
-                            <div class="cart-item-title">${item.name}</div>
-                            <div class="cart-item-price">${Math.round(item.price * item.qty * 100) / 100} руб.</div>
+                            <div class="cart-item-title">${escapeHtml(item.name)}</div>
+                            <div class="cart-item-price">${money(item.price * item.qty)} сом</div>
                         </div>
                         <div class="cart-controls">
                             <button class="qty-btn" onclick="changeQty(${item.id}, -1)">-</button>
@@ -944,16 +1126,51 @@ PAGE_MIDDLE = """
             });
         }
 
-        function checkout() {
-            if (cart.length === 0) {
-                alert("Корзина пуста!");
-                return;
+        async function checkout() {
+            const err = document.getElementById('formError');
+            const btn = document.getElementById('checkoutBtn');
+            err.innerText = '';
+
+            if (cart.length === 0) { err.innerText = 'Корзина пуста!'; return; }
+
+            const name = document.getElementById('custName').value.trim();
+            const phone = normalizePhone(document.getElementById('custPhone').value);
+            const address = document.getElementById('custAddress').value.trim();
+
+            if (name.length < 2 || !/[A-Za-zА-Яа-яЁёҢңӨөҮү]/.test(name)) { err.innerText = 'Введите ваше имя.'; return; }
+            if (!phone) { err.innerText = 'Введите настоящий номер телефона, например +996 700 245 781.'; return; }
+            if (address.length < 5) { err.innerText = 'Введите адрес доставки.'; return; }
+
+            btn.disabled = true;
+            try {
+                const res = await fetch('/order', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ name, phone, address, items: cart.map(i => ({ id: i.id, qty: i.qty })) })
+                });
+                const data = await res.json();
+                if (data.ok) {
+                    cart = [];
+                    updateCart();
+                    document.getElementById('custName').value = '';
+                    document.getElementById('custPhone').value = '';
+                    document.getElementById('custAddress').value = '';
+                    closeCart();
+                    showModal('Спасибо за заказ!', 'Ваш заказ №' + data.id + ' принят. Мы свяжемся с вами по номеру ' + phone + ' для подтверждения.');
+                } else {
+                    err.innerText = data.error || 'Не удалось оформить заказ.';
+                }
+            } catch (e) {
+                err.innerText = 'Не удалось отправить заказ. Попробуйте ещё раз.';
+            } finally {
+                btn.disabled = false;
             }
-            alert("Спасибо за заказ! Наш менеджер свяжется с вами.");
         }
+
+        updateCart();
     </script>
 </body>
-</html>"""
+</html>""".replace("__DELIVERY__", str(DELIVERY_FEE))
 
 async def handle_website(request):
     global SITE_ACTIVE
@@ -998,8 +1215,8 @@ async def handle_website(request):
         parts.append(f"""
         <div class="banner">
             {CUBE_HTML}
-            <h2>🎉 Товары с доставкой!</h2>
-            <p>Заказывайте любимые товары онлайн. Бесплатная доставка при заказе от 5000 руб.!</p>
+            <h2>🎉 Всё нужное — в одном магазине!</h2>
+            <p>Заказывайте любые товары онлайн — привезём прямо к вам домой.</p>
         </div>
         """)
 
@@ -1021,7 +1238,7 @@ async def handle_website(request):
                     <div>
                         {cat_label}
                         <div class="product-title">{esc(name)}</div>
-                        <div class="product-price">{price_text} руб. {disc_badge}</div>
+                        <div class="product-price">{price_text} сом {disc_badge}</div>
                     </div>
                     <button class="add-btn" onclick="addToCart({int(p_id)}, {js_str(name)}, {price_text}, {js_str(unit_text)})">В корзину ({esc(unit_text)})</button>
                 </div>
@@ -1033,9 +1250,97 @@ async def handle_website(request):
 
     return web.Response(text="".join(parts), content_type="text/html", charset="utf-8")
 
+# ---------- ПРИЁМ ЗАКАЗОВ С САЙТА ----------
+KG_PREFIXES = {"755", "880", "990", "995", "999", "222"}
+for _start, _end in ((500, 509), (550, 559), (700, 709), (770, 779)):
+    for _code in range(_start, _end + 1):
+        KG_PREFIXES.add(str(_code))
+
+def normalize_phone(raw):
+    digits = re.sub(r"\D", "", str(raw or ""))
+    if len(digits) == 12 and digits.startswith("996"):
+        nine = digits[3:]
+    elif len(digits) == 10 and digits.startswith("0"):
+        nine = digits[1:]
+    elif len(digits) == 9:
+        nine = digits
+    else:
+        return None
+    if nine[:3] not in KG_PREFIXES:
+        return None
+    rest = nine[3:]
+    if len(set(rest)) == 1 or rest in "0123456789" or rest in "9876543210":
+        return None
+    return "+996" + nine
+
+LAST_ORDER_TIME = {}
+
+def order_error(text, status=400):
+    return web.json_response({"ok": False, "error": text}, status=status)
+
+async def handle_order(request):
+    if not SITE_ACTIVE:
+        return order_error("Сайт временно отключен.", 503)
+    try:
+        data = await request.json()
+    except Exception:
+        return order_error("Неверные данные заказа.")
+
+    ip = (request.headers.get("X-Forwarded-For") or request.remote or "").split(",")[0].strip()
+    if time.time() - LAST_ORDER_TIME.get(ip, 0) < 15:
+        return order_error("Подождите немного перед новым заказом.", 429)
+
+    name = str(data.get("name", "")).strip()
+    address = str(data.get("address", "")).strip()
+    phone = normalize_phone(data.get("phone"))
+
+    if len(name) < 2 or len(name) > 50 or not re.search(r"[A-Za-zА-Яа-яЁёҢңӨөҮү]", name):
+        return order_error("Введите ваше имя.")
+    if not phone:
+        return order_error("Введите настоящий номер телефона, например +996 700 245 781.")
+    if len(address) < 5 or len(address) > 200:
+        return order_error("Введите адрес доставки.")
+
+    raw_items = data.get("items")
+    if not isinstance(raw_items, list) or not raw_items or len(raw_items) > 50:
+        return order_error("Корзина пуста.")
+
+    lines, subtotal = [], 0.0
+    for entry in raw_items:
+        try:
+            pid = int(entry.get("id"))
+            qty = int(entry.get("qty"))
+        except Exception:
+            return order_error("Неверные данные заказа.")
+        if qty < 1 or qty > 99:
+            return order_error("Неверное количество товара.")
+        rows = db_all("SELECT name, unit, price FROM products WHERE id = ?", (pid,))
+        if not rows:
+            return order_error("Один из товаров больше недоступен. Обновите страницу.")
+        pname, unit, price = rows[0]
+        price = float(price or 0)
+        line_total = price * qty
+        subtotal += line_total
+        lines.append(f"• {pname} × {qty} {unit or 'шт'} = {fmt_price(line_total)} сом")
+
+    delivery = DELIVERY_FEE
+    total = subtotal + delivery
+    created = now_local().strftime("%Y-%m-%d %H:%M:%S")
+    order_id = db_run(
+        "INSERT INTO orders (name, phone, address, items, subtotal, delivery, total, status, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, 'new', ?)",
+        (name, phone, address, "\n".join(lines), subtotal, delivery, total, created)
+    )
+    if not order_id:
+        return order_error("Не удалось сохранить заказ. Попробуйте ещё раз.", 500)
+
+    LAST_ORDER_TIME[ip] = time.time()
+    await notify_admins(order_id)
+    return web.json_response({"ok": True, "id": order_id})
+
 async def run_web():
     app = web.Application()
     app.router.add_get('/', handle_website)
+    app.router.add_post('/order', handle_order)
     runner = web.AppRunner(app)
     await runner.setup()
     port = int(os.environ.get("PORT", 10000))
