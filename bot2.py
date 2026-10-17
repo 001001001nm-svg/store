@@ -169,7 +169,7 @@ def ask_ai(prompt, system_instruction):
                     {"role": "system", "content": system_instruction},
                     {"role": "user", "content": prompt}
                 ],
-                "max_tokens": 500,
+                "max_tokens": 1500,
                 "temperature": 0.3
             }
             try:
@@ -184,14 +184,40 @@ def ask_ai(prompt, system_instruction):
                 print(f"Ошибка ИИ запроса ({model}): {e}")
                 continue
 
-    if "ВУЗ" in prompt or "ЖОЖ" in prompt:
-        return "🏛️ Топ ВУЗы и Колледжи:\n1. Городской Университет — ведет прием по международным программам.\n2. Технологический Институт — гранты на технические специальности.\n3. Национальная Академия — программы обмена и стипендии."
-    elif "Стипендии" in prompt or "Гранты" in prompt:
-        return "💰 Стипендии и Гранты:\n• Государственные гранты (Full Tuition) — покрывают 100% стоимости.\n• Стипендии университетов — от $1,000 до $5,000 в год.\n• Гранты на проживание и питание."
+    # Подробный резервный ответ по языкам и категориям
+    if "ВУЗ" in prompt or "ЖОЖ" in prompt or "Университет" in prompt:
+        return (
+            "🏛️ Учебные заведения и проходные баллы:\n\n"
+            "1. КНУ им. Ж. Баласагына — Проходной балл ОРТ: 110-140+ (в зависимости от факультета).\n"
+            "2. КРСУ им. Б. Ельцина — Проходной балл ОРТ: 120-150+.\n"
+            "3. КГТУ им. И. Раззакова — Проходной балл ОРТ: 110-135+.\n"
+            "4. МУК (Международный Университет Кыргызстана) — Проходной балл ОРТ: 110+.\n"
+            "5. АУЦА (AUCA) — Внутренние экзамены / TOEFL (80+) + SAT (1100+) / ОРТ: 140+.\n"
+            "6. Университет Манас — Внутренний экзамен КТУ Манас / ОРТ: 110+.\n\n"
+            "📌 Обратите внимание: для грантовых мест проходной балл ОРТ обычно составляет от 160-180+ баллов."
+        )
+    elif "Стипендии" in prompt or "Гранты" in prompt or "Стипендия" in prompt:
+        return (
+            "💰 Стипендии и Гранты:\n\n"
+            "• Государственные гранты (Бюджет): 100% покрытие стоимости обучения. Требуются высокие баллы ОРТ (170-200+).\n"
+            "• Президентская стипендия: Покрывает обучение + ежемесячная выплата для лучших абитуриентов (Золотой сертификат ОРТ).\n"
+            "• Международные стипендии (Türkiye Bursları, CSC Китай, KGSP Корея): Покрывают 100% учебы, проживание, перелет и дают ежемесячную стипендию $300-$800."
+        )
     elif "Документ" in prompt:
-        return "📄 Основные документы:\n1. Заграничный паспорт (срок действия от 1 года).\n2. Аттестат/диплом с нотариальным переводом.\n3. Языковой сертификат (IELTS / TOEFL / HSK).\n4. Мотивационное письмо."
+        return (
+            "📄 Список необходимых документов:\n\n"
+            "1. Сертификат ОРТ (оригинал).\n"
+            "2. Аттестат о среднем образовании (11 класс) или диплом колледжа.\n"
+            "3. Паспорт (копия и оригинал).\n"
+            "4. 6 фотографий размером 3x4 см.\n"
+            "5. Приписное свидетельство или военный билет (для юношей).\n"
+            "6. Медицинская справка форма 086-У."
+        )
     else:
-        return "💡 Полезные рекомендации по выбору профессии и ВУЗа:\n• Учитывайте свои сильные стороны и интересы.\n• Подавайте документы минимум за 6 месяцев до начала учебы.\n• Проверяйте дедлайны подачи на гранты заранее."
+        return (
+            "💡 Информация по выбору специальности:\n\n"
+            "При выборе профессии ориентируйтесь на свои склонности и баллы. Для технических специальностей важны математика и физика, для медицинских — химия и биология. Уточняйте проходные баллы на выбранный факультет заранее."
+        )
 
 # ==========================================
 # 5. КЛАВИАТУРЫ
@@ -216,6 +242,16 @@ def get_main_keyboard(user_id, lang):
         markup.row("📄 Документтер тизмеси", "💰 Стипендиялар")
         markup.row("🌍 Өлкөнү алмаштыруу", "🌐 Тилди алмаштыруу")
         markup.row("🔄 Жаңы диалог")
+    elif lang == "🇬🇧 English":
+        markup.row("🔥 Top Universities & Colleges", "💡 Advice & Requirements")
+        markup.row("📄 Document List", "💰 Scholarships & Grants")
+        markup.row("🌍 Change Country", "🌐 Change Language")
+        markup.row("🔄 Restart")
+    elif lang == "🇹🇷 Türkçe":
+        markup.row("🔥 En İyi Üniversiteler", "💡 Tavsiyeler ve Şartlar")
+        markup.row("📄 Belge Listesi", "💰 Burslar ve Hibelere")
+        markup.row("🌍 Ülkeyi Değiştir", "🌐 Dili Değiştir")
+        markup.row("🔄 Yeniden Başlat")
     else:
         markup.row("🔥 Топ ВУЗы и Колледжи", "💡 Лайфхаки и Требования")
         markup.row("📄 Список документов", "💰 Стипендии и Гранты")
@@ -298,7 +334,7 @@ def handle_callbacks(call):
 
     if data.startswith("act_"):
         user_data = user_states.get(user_id, {})
-        c_country = user_data.get("country", "Китай")
+        c_country = user_data.get("country", "Кыргызстан")
         c_lang = user_data.get("lang", "🇷🇺 Русский")
 
         try:
@@ -318,8 +354,11 @@ def handle_callbacks(call):
             bot.send_message(call.message.chat.id, "📸 Не удалось загрузить фото. Попробуйте еще раз.", reply_markup=get_reels_inline_buttons())
             return
 
-        prompt = f"Напишите 1 интересный факт или ведущий университет в {c_country} для профориентации."
-        sys_prompt = f"You are a professional career and educational advisor. Language: {c_lang}. Professional tone, concise (max 2 sentences). Use clean emojis."
+        prompt = f"Напишите 1 ведущий университет в {c_country} и обязательно укажите минимальный проходной балл для поступления."
+        sys_prompt = (
+            f"You MUST answer strictly and exclusively in the following language: {c_lang}.\n"
+            f"You are MyProfi KG 🎓, an expert career advisor. Professional tone. State the passing scores clearly."
+        )
         ai_text = ask_ai(prompt, sys_prompt)
         photo_file = fetch_photo_bytes(f"{c_country} university building")
 
@@ -407,7 +446,7 @@ def handle_message(message):
         all_users[user_id]["last_active"] = today_str
 
     if user_id not in user_states:
-        user_states[user_id] = {"lang": "🇷🇺 Русский", "name": None, "age": None, "country": "Китай", "state": None}
+        user_states[user_id] = {"lang": "🇷🇺 Русский", "name": None, "age": None, "country": "Кыргызстан", "state": None}
 
     user_data = user_states[user_id]
     current_state = user_data.get("state")
@@ -474,7 +513,7 @@ def handle_message(message):
             return
 
     lang = user_data.get("lang", "🇷🇺 Русский")
-    c_country = user_data.get("country", "Китай")
+    c_country = user_data.get("country", "Кыргызстан")
 
     # Админ-Панели
     if text == "🛠 Панель Админа" and (user_id == OWNER_ID or user_id in admins):
@@ -545,42 +584,48 @@ def handle_message(message):
         bot.send_message(message.chat.id, f"📊 Активных пользователей за сегодня: {count}")
         return
 
-    if text == "🔙 Главное меню":
+    if text in ["🔙 Главное меню", "Главное меню"]:
         bot.send_message(message.chat.id, "🏡 Главное меню:", reply_markup=get_main_keyboard(user_id, lang))
         return
 
-    if text in ["🌐 Сменить язык", "🌐 Тилди алмаштыруу"]:
+    if text in ["🌐 Сменить язык", "🌐 Тилди алмаштыруу", "🌐 Change Language", "🌐 Dili Değiştir"]:
         user_data["state"] = "WAITING_FOR_LANG"
         bot.send_message(message.chat.id, "Выберите язык / Тилди тандаңыз:", reply_markup=get_language_keyboard())
         return
 
-    if text in ["🌍 Сменить страну", "🌍 Өлкөнү алмаштыруу"]:
+    if text in ["🌍 Сменить страну", "🌍 Өлкөнү алмаштыруу", "🌍 Change Country", "🌍 Ülkeyi Değiştir"]:
         user_data["state"] = "WAITING_FOR_COUNTRY"
         bot.send_message(message.chat.id, "Выберите страну для обучения:", reply_markup=get_country_keyboard())
         return
 
-    if text in ["🔄 Начать заново", "🔄 Жаңы диалог"]:
+    if text in ["🔄 Начать заново", "🔄 Жаңы диалог", "🔄 Restart", "🔄 Yeniden Başlat"]:
         start(message)
         return
 
     try:
-        wait_msg = bot.send_message(message.chat.id, "⏳ Подбираем информацию по профессии и ВУЗам...")
+        wait_msg = bot.send_message(message.chat.id, "⏳ Подбираем информацию по ВУЗам и стипендиям...")
     except Exception:
         wait_msg = None
 
-    if "Стипендии" in text or "Гранты" in text:
-        prompt_query = f"Расскажи про главные стипендии и гранты в {c_country} для поступления студентов. Напиши точные суммы."
-        search_query = f"стипендии гранты {c_country} обучение точные суммы 2026"
+    if "Стипендии" in text or "Гранты" in text or "Burslar" in text or "Scholarships" in text:
+        prompt_query = (
+            f"Напиши ПОЛНЫЙ и подборный список всех стипендий, грантов и бюджетных программ для обучения в {c_country}. "
+            f"Укажи условия получения, суммы выплат и требования к абитуриентам."
+        )
+        search_query = f"стипендии гранты {c_country} обучение полные условия суммы 2026"
         query_photo = f"{c_country} university scholarship money diploma"
-    elif "ВУЗ" in text or "Колледж" in text or "ЖОЖ" in text:
-        prompt_query = f"Назови 3 ведущих университета и колледжа в {c_country} для выбора будущей профессии."
-        search_query = f"топ университеты ВУЗы {c_country} 2026"
+    elif "ВУЗ" in text or "Колледж" in text or "ЖОЖ" in text or "Üniversiteler" in text or "Universities" in text:
+        prompt_query = (
+            f"Перечисли ВСЕ ведущие учебные заведения (университеты, ВУЗы, институты и колледжи) в {c_country}. "
+            f"ОБЯЗАТЕЛЬНО укажи напротив КАЖДОГО университета минимальный проходной балл (ОРТ, SAT, Внутренний экзамен или HSK)."
+        )
+        search_query = f"список ВУЗов университетов {c_country} проходные баллы ОРТ 2026"
         query_photo = f"{c_country} top university campus building"
-    elif "Лайфхак" in text or "Талаптар" in text:
+    elif "Лайфхак" in text or "Талаптар" in text or "Advice" in text or "Tavsiyeler" in text:
         prompt_query = f"Дай важные рекомендации и требования для выбора профессии и поступления в {c_country}."
         search_query = f"требования поступление в {c_country} 2026"
         query_photo = f"students university studying preparation"
-    elif "Документ" in text:
+    elif "Документ" in text or "Document" in text or "Belge" in text:
         prompt_query = f"Список основных документов, необходимых для поступления в ВУЗы {c_country}."
         search_query = f"документы для поступления в {c_country} 2026"
         query_photo = f"passport visa application documents"
@@ -592,15 +637,15 @@ def handle_message(message):
     web_data = search_web(search_query)
 
     sys_prompt = (
-        f"You are MyProfi KG 🎓 — a professional, highly competent career guidance and educational advisor.\n"
-        f"Selected primary country: {c_country}. Language: {lang}.\n"
+        f"CRITICAL INSTRUCTION: You MUST write your ENTIRE response STRICTLY AND EXCLUSIVELY in the following language: {lang}.\n"
+        f"Selected country: {c_country}.\n"
         f"FRESH WEB DATA:\n{web_data}\n\n"
-        f"INSTRUCTIONS:\n"
-        f"1. DIRECT ANSWER RULE: Answer the user's specific prompt directly! Help them choose a profession, career path, or university.\n"
-        f"2. TONE: Maintain a polite, professional, business-oriented yet accessible tone.\n"
-        f"3. EMOJIS: Use emojis tastefully and neatly (🎓, 🏛️, 💰, 📌, ✅) to structure information clearly.\n"
-        f"4. SCHOLARSHIPS: Always provide exact scholarship amounts when asked.\n"
-        f"5. NO MARKDOWN: Strictly avoid markdown formatting (*, #, _)."
+        f"RULES:\n"
+        f"1. LANGUAGE STRICTNESS: Never speak Russian if the user chose English, Kyrgyz, or Turkish! Respond purely in {lang}.\n"
+        f"2. UNIVERSITIES & PASSING SCORES: When listing universities, you MUST clearly state the minimum passing scores (e.g., ORT / SAT / HSK) next to each school.\n"
+        f"3. SCHOLARSHIPS: Give a detailed breakdown of available grants, scholarships, and exact monthly payouts.\n"
+        f"4. EMOJIS & FORMATTING: Use clean emojis (🎓, 🏛️, 💰, 📌, ✅) and structure with bullet points.\n"
+        f"5. NO MARKDOWN CHARACTERS: Avoid Markdown formatting like (*, #, _, `) so text displays cleanly in Telegram."
     )
 
     ai_response = ask_ai(prompt_query, sys_prompt)
