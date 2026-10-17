@@ -859,6 +859,8 @@ PAGE_HEAD = """<!DOCTYPE html>
         .fav-btn { position: absolute; top: 12px; right: 12px; width: 34px; height: 34px; border-radius: 50%; border: none; background: var(--candy-soft); color: var(--rose); font-size: 18px; cursor: pointer; line-height: 1; transition: transform 0.15s; }
         .fav-btn:hover { transform: scale(1.15); }
         .fav-btn.on { background: var(--rose); color: white; }
+        .product-img { width: 100%; aspect-ratio: 1 / 1; border-radius: 12px; overflow: hidden; background: var(--candy-soft); margin-bottom: 12px; }
+        .product-img img { width: 100%; height: 100%; object-fit: cover; display: block; }
         .product-cat { font-size: 11px; color: var(--rose-dark); background: var(--candy-soft); padding: 4px 8px; border-radius: 6px; display: inline-block; margin-bottom: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.5px; }
         .product-title { font-size: 16px; font-weight: 600; margin-bottom: 8px; color: var(--plum); line-height: 1.3; padding-right: 30px; }
         .product-price { font-size: 20px; color: var(--rose-dark); font-weight: 700; margin-bottom: 15px; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
@@ -1395,12 +1397,14 @@ async def handle_website(request):
             disc_badge = f'<span class="product-discount">-{esc(discount)}</span>' if (discount and has_discount) else ''
             old_price = f'<span class="old-price">{fmt_price(price)} сом</span>' if has_discount else ''
             cat_label = f'<div class="product-cat">{esc(cat or "Общее")}</div>'
+            img_html = f'<div class="product-img"><img src="/photo/{int(p_id)}" alt="{esc(name)}" loading="lazy" onerror="this.parentNode.style.display=\'none\'"></div>' if photo else ''
             unit_text = unit or "шт"
             price_text = fmt_price(final_price)
             parts.append(f"""
                 <div class="product-card" data-id="{int(p_id)}" data-order="{order_no}" data-price="{price_text}" data-name="{esc(name)}" data-unit="{esc(unit_text)}" data-title="{esc(str(name or '').lower())}" data-cat="{esc(cat or '')}">
                     <button class="fav-btn" data-id="{int(p_id)}" onclick="toggleFav({int(p_id)}, this)" title="В избранное">♡</button>
                     <div>
+                        {img_html}
                         {cat_label}
                         <div class="product-title">{esc(name)}</div>
                         <div class="product-price">{price_text} сом {old_price} {disc_badge}</div>
@@ -1414,6 +1418,34 @@ async def handle_website(request):
     parts.append(PAGE_MIDDLE)
 
     return web.Response(text="".join(parts), content_type="text/html", charset="utf-8")
+
+# ---------- ФОТО ТОВАРОВ (берём из Telegram и кэшируем) ----------
+PHOTO_DIR = os.path.join(os.path.dirname(os.path.abspath(DB_PATH)), "photos")
+
+async def handle_photo(request):
+    try:
+        pid = int(request.match_info["pid"])
+    except (KeyError, ValueError):
+        return web.Response(status=404)
+    rows = db_all("SELECT photo FROM products WHERE id = ?", (pid,))
+    file_id = rows[0][0] if rows else None
+    if not file_id:
+        return web.Response(status=404)
+
+    safe_name = re.sub(r"[^A-Za-z0-9_-]", "", str(file_id))[:150]
+    if not safe_name:
+        return web.Response(status=404)
+    try:
+        os.makedirs(PHOTO_DIR, exist_ok=True)
+        path = os.path.join(PHOTO_DIR, safe_name + ".jpg")
+        if not os.path.exists(path):
+            tmp_path = path + ".tmp"
+            await bot.download(file_id, destination=tmp_path)
+            os.replace(tmp_path, path)
+    except Exception as e:
+        logging.error(f"Photo error for product {pid}: {e}")
+        return web.Response(status=404)
+    return web.FileResponse(path, headers={"Cache-Control": "public, max-age=86400"})
 
 # ---------- ПРИЁМ ЗАКАЗОВ С САЙТА ----------
 KG_PREFIXES = {"755", "880", "990", "995", "999", "222"}
@@ -1506,6 +1538,7 @@ async def run_web():
     app = web.Application()
     app.router.add_get('/', handle_website)
     app.router.add_post('/order', handle_order)
+    app.router.add_get('/photo/{pid}', handle_photo)
     runner = web.AppRunner(app)
     await runner.setup()
     port = int(os.environ.get("PORT", 10000))
