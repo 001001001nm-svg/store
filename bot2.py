@@ -181,7 +181,7 @@ def ask_ai(prompt, system_instruction):
                 print(f"Ошибка ИИ запроса ({model}): {e}")
                 continue
 
-    # Динамический запасной ответ строго под указанную страну
+    # Динамический резервный ответ строго под страну
     country_tag = prompt.split("Страна: ")[-1] if "Страна: " in prompt else "Кыргызстан"
     return (
         f"🏛️ Список ведущих учебных заведений и проходные баллы в стране {country_tag}:\n\n"
