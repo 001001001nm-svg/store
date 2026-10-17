@@ -23,7 +23,11 @@ class SimpleHTTPRequestHandler(BaseHTTPRequestHandler):
 
     def do_HEAD(self):
         self.send_response(200)
+        self.send_header("Content-type", "text/html; charset=utf-8")
         self.end_headers()
+
+    def log_message(self, format, *args):
+        return
 
 def run_web_server():
     port = int(os.environ.get("PORT", 10000))
@@ -39,7 +43,6 @@ threading.Thread(target=run_web_server, daemon=True).start()
 # ==========================================
 # 2. ИНИЦИАЛИЗАЦИЯ И ХРАНЕНИЕ ДАННЫХ
 # ==========================================
-# Обновленный Telegram Токен:
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "8891087735:AAFPy02IyHL-1dhu5QTxiMIWAnq3C8g1Vmo")
 OPENROUTER_KEY = os.environ.get("OPENROUTER_KEY", "")
 UNSPLASH_KEY = os.environ.get("UNSPLASH_ACCESS_KEY", "odaMYOHO8tsFHyGe_Q8-0EZtab_NohgvOYRBEvtIkRE")
@@ -81,11 +84,9 @@ def save_data():
 
 all_users, admins, banned_users, bot_enabled = load_data()
 user_states = {}
-user_blitz_games = {}
 
 LANGUAGES = ["🇷🇺 Русский", "🇰🇬 Кыргызча", "🇬🇧 English", "🇹🇷 Türkçe"]
 COUNTRIES = ["🇰🇬 Кыргызстан", "🇹🇷 Турция", "🇺🇸 США", "🇨🇳 Китай", "🇰🇷 Южная Корея", "🇨🇦 Канада"]
-SUBJECTS = ["📚 Литература", "📜 История", "📐 Математика", "🌍 География", "⚡ Физика", "💻 Информатика", "🧪 Химия"]
 
 # ==========================================
 # 3. ФУНКЦИЯ ВЕБ-ПОИСКА (TAVILY API)
@@ -152,7 +153,7 @@ def ask_ai(prompt, system_instruction):
             "Authorization": f"Bearer {OPENROUTER_KEY}",
             "Content-Type": "application/json",
             "HTTP-Referer": "https://render.com",
-            "X-Title": "Barsbek Bot"
+            "X-Title": "MyProfi KG Bot"
         }
         
         models_to_try = [
@@ -190,49 +191,10 @@ def ask_ai(prompt, system_instruction):
     elif "Документ" in prompt:
         return "📄 Основные документы:\n1. Заграничный паспорт (срок действия от 1 года).\n2. Аттестат/диплом с нотариальным переводом.\n3. Языковой сертификат (IELTS / TOEFL / HSK).\n4. Мотивационное письмо."
     else:
-        return "💡 Полезные рекомендации:\n• Подавайте документы минимум за 6 месяцев до начала учебы.\n• Проверяйте дедлайны подачи на стипендии заранее."
+        return "💡 Полезные рекомендации по выбору профессии и ВУЗа:\n• Учитывайте свои сильные стороны и интересы.\n• Подавайте документы минимум за 6 месяцев до начала учебы.\n• Проверяйте дедлайны подачи на гранты заранее."
 
 # ==========================================
-# 5. ИИ ДЛЯ БЛИЦ-ОПРОСА
-# ==========================================
-def generate_blitz_question():
-    subject = random.choice(SUBJECTS)
-    sys_prompt = "Ты ведущий школьной викторины. Сгенерируй 1 короткий вопрос по школьной программе."
-    usr_prompt = f"Предмет: {subject}. Верни JSON строго: {{\"subject\": \"{subject}\", \"question\": \"текст вопроса\", \"answer\": \"краткий ответ\"}}"
-    
-    res = ask_ai(usr_prompt, sys_prompt)
-    if res:
-        try:
-            clean = res.replace("```json", "").replace("```", "").strip()
-            return json.loads(clean)
-        except Exception:
-            pass
-
-    fallbacks = [
-        {"subject": "📚 Литература", "question": "Как звали верного слугу Гринева в «Капитанской дочке»?", "answer": "Савельич"},
-        {"subject": "📜 История", "question": "В каком году произошла Куликовская битва?", "answer": "1380"},
-        {"subject": "📐 Математика", "question": "Чему равен корень из 144?", "answer": "12"},
-        {"subject": "🌍 География", "question": "Какое озеро самое глубокое в мире?", "answer": "Байкал"}
-    ]
-    return random.choice(fallbacks)
-
-def check_blitz_answer(user_ans, correct_ans, question_text):
-    sys_prompt = "Ты судья школьной викторины. Оцени, верен ли ответ пользователя по смыслу."
-    usr_prompt = f"Вопрос: {question_text}\nПравильный ответ: {correct_ans}\nОтвет пользователя: {user_ans}\n\nВерни JSON строго: {{\"is_correct\": true/false, \"comment\": \"короткий комментарий\"}}"
-    
-    res = ask_ai(usr_prompt, sys_prompt)
-    if res:
-        try:
-            clean = res.replace("```json", "").replace("```", "").strip()
-            return json.loads(clean)
-        except Exception:
-            pass
-
-    is_corr = correct_ans.lower() in user_ans.lower() or user_ans.lower() in correct_ans.lower()
-    return {"is_correct": is_corr, "comment": f"Правильный ответ: {correct_ans}"}
-
-# ==========================================
-# 6. КЛАВИАТУРЫ
+# 5. КЛАВИАТУРЫ
 # ==========================================
 def get_language_keyboard():
     markup = types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
@@ -252,13 +214,13 @@ def get_main_keyboard(user_id, lang):
     if lang == "🇰🇬 Кыргызча":
         markup.row("🔥 Топ ЖОЖдор жана Колледждер", "💡 Лайфхактар жана Талаптар")
         markup.row("📄 Документтер тизмеси", "💰 Стипендиялар")
-        markup.row("🎮 Блиц-опрос по предметам", "🌍 Өлкөнү алмаштыруу")
-        markup.row("🌐 Тилди алмаштыруу", "🔄 Жаңы диалог")
+        markup.row("🌍 Өлкөнү алмаштыруу", "🌐 Тилди алмаштыруу")
+        markup.row("🔄 Жаңы диалог")
     else:
         markup.row("🔥 Топ ВУЗы и Колледжи", "💡 Лайфхаки и Требования")
         markup.row("📄 Список документов", "💰 Стипендии и Гранты")
-        markup.row("🎮 Блиц-опрос по предметам", "🌍 Сменить страну")
-        markup.row("🌐 Сменить язык", "🔄 Начать заново")
+        markup.row("🌍 Сменить страну", "🌐 Сменить язык")
+        markup.row("🔄 Начать заново")
 
     is_owner = (user_id == OWNER_ID)
     is_admin = (user_id in admins) or is_owner
@@ -299,7 +261,7 @@ def get_reels_inline_buttons():
     return markup
 
 # ==========================================
-# 7. ХЭНДЛЕРЫ I: ИНЛАЙН УПРАВЛЕНИЕ
+# 6. ХЭНДЛЕРЫ I: ИНЛАЙН УПРАВЛЕНИЕ
 # ==========================================
 @bot.callback_query_handler(func=lambda call: True)
 def handle_callbacks(call):
@@ -356,8 +318,8 @@ def handle_callbacks(call):
             bot.send_message(call.message.chat.id, "📸 Не удалось загрузить фото. Попробуйте еще раз.", reply_markup=get_reels_inline_buttons())
             return
 
-        prompt = f"Напишите 1 интересный факт или ведущий университет в {c_country}."
-        sys_prompt = f"You are a professional educational advisor. Language: {c_lang}. Professional tone, concise (max 2 sentences). Use clean emojis."
+        prompt = f"Напишите 1 интересный факт или ведущий университет в {c_country} для профориентации."
+        sys_prompt = f"You are a professional career and educational advisor. Language: {c_lang}. Professional tone, concise (max 2 sentences). Use clean emojis."
         ai_text = ask_ai(prompt, sys_prompt)
         photo_file = fetch_photo_bytes(f"{c_country} university building")
 
@@ -371,7 +333,7 @@ def handle_callbacks(call):
         bot.send_message(call.message.chat.id, ai_text, reply_markup=get_reels_inline_buttons())
 
 # ==========================================
-# 8. ХЭНДЛЕРЫ II: СООБЩЕНИЯ И ЛОГИКА
+# 7. ХЭНДЛЕРЫ II: СООБЩЕНИЯ И ЛОГИКА
 # ==========================================
 @bot.message_handler(commands=['start'])
 def start(message):
@@ -410,11 +372,11 @@ def start(message):
     if u_data.get("name") and u_data.get("age"):
         u_data["state"] = "WAITING_FOR_COUNTRY"
         name = u_data["name"]
-        msg = f"Здравствуйте, {name}! 👋 Рад приветствовать вас снова.\nПожалуйста, выберите страну для консультации по обучению:"
+        msg = f"Здравствуйте, {name}! 👋 Рад приветствовать вас снова.\nПожалуйста, выберите страну для консультации по выбору профессии и ВУЗа:"
         bot.send_message(message.chat.id, msg, reply_markup=get_country_keyboard())
     else:
         u_data["state"] = "WAITING_FOR_LANG"
-        msg = "Здравствуйте! Я Барсбек 🐆 — ваш консультант по образованию за рубежом.\n\nВыберите язык / Тилди тандаңыз:"
+        msg = "Здравствуйте! Я MyProfi KG 🎓 — ваш профориентационный консультант.\n\nВыберите язык / Тилди тандаңыз:"
         bot.send_message(message.chat.id, msg, reply_markup=get_language_keyboard())
 
 @bot.message_handler(func=lambda message: True)
@@ -449,42 +411,6 @@ def handle_message(message):
 
     user_data = user_states[user_id]
     current_state = user_data.get("state")
-
-    # Обработка активной игры Блиц-опрос
-    if user_id in user_blitz_games and user_blitz_games[user_id].get("waiting_for_ans"):
-        if text in ["🛑 Завершить блиц", "🛑 Завершить игру"]:
-            score = user_blitz_games[user_id]["score"]
-            total = user_blitz_games[user_id]["total"]
-            del user_blitz_games[user_id]
-            lang = user_data.get("lang", "🇷🇺 Русский")
-            bot.send_message(message.chat.id, f"🏁 **Игра окончена!**\n\nТвой результат: **{score} из {total}**!", parse_mode="Markdown", reply_markup=get_main_keyboard(user_id, lang))
-            return
-
-        user_game = user_blitz_games[user_id]
-        user_game["waiting_for_ans"] = False
-        user_game["total"] += 1
-        
-        wait_msg = bot.send_message(message.chat.id, "🧠 *ИИ проверяет ответ...*", parse_mode="Markdown")
-        res = check_blitz_answer(text, user_game["current_a"], user_game["current_q"])
-        
-        try:
-            bot.delete_message(message.chat.id, wait_msg.message_id)
-        except Exception:
-            pass
-
-        correct_ans_str = user_game["current_a"]
-        comment_str = res.get("comment", f"Правильный ответ: {correct_ans_str}")
-
-        if res.get("is_correct"):
-            user_game["score"] += 1
-            res_msg = f"✅ **Правильно!**\n\n💬 {comment_str}\n\n🏆 Счёт: **{user_game['score']}/{user_game['total']}**"
-        else:
-            res_msg = f"❌ **Не совсем верно.**\n\n💬 {comment_str}\n\n🏆 Счёт: **{user_game['score']}/{user_game['total']}**"
-
-        markup = types.ReplyKeyboardMarkup(resize_keyboard=True)
-        markup.row("🚀 Следующий вопрос", "🛑 Завершить блиц")
-        bot.send_message(message.chat.id, res_msg, parse_mode="Markdown", reply_markup=markup)
-        return
 
     if current_state == "WAITING_FOR_ADMIN_INPUT" and user_id == OWNER_ID:
         user_data["state"] = None
@@ -535,7 +461,7 @@ def handle_message(message):
             user_data["state"] = None
             lang = user_data.get("lang", "🇷🇺 Русский")
             
-            welcome_txt = f"🎓 Выбрана страна: {text}\nНажмите на интересующие вас разделы меню ниже."
+            welcome_txt = f"🎓 Выбрана страна: {text}\nНажмите на интересующие вас разделы меню ниже для подбора профессии и ВУЗа."
             photo = fetch_photo_bytes(f"{text} architecture capital landmark")
             
             if photo:
@@ -549,30 +475,6 @@ def handle_message(message):
 
     lang = user_data.get("lang", "🇷🇺 Русский")
     c_country = user_data.get("country", "Китай")
-
-    # Старт Блиц-опроса по кнопке из меню
-    if text in ["🎮 Блиц-опрос по предметам", "🚀 Следующий вопрос"]:
-        if user_id not in user_blitz_games:
-            user_blitz_games[user_id] = {"score": 0, "total": 0, "current_q": "", "current_a": "", "waiting_for_ans": False}
-        
-        wait_msg = bot.send_message(message.chat.id, "🤖 *ИИ генерирует вопрос по школьной программе...*", parse_mode="Markdown")
-        q_data = generate_blitz_question()
-        
-        user_blitz_games[user_id]["current_q"] = q_data["question"]
-        user_blitz_games[user_id]["current_a"] = q_data["answer"]
-        user_blitz_games[user_id]["waiting_for_ans"] = True
-        
-        try:
-            bot.delete_message(message.chat.id, wait_msg.message_id)
-        except Exception:
-            pass
-
-        markup = types.ReplyKeyboardMarkup(resize_keyboard=True)
-        markup.row("🛑 Завершить блиц")
-        
-        msg_txt = f"🎯 **Блиц-Вопрос** ({q_data['subject']}):\n\n❓ {q_data['question']}\n\n✍️ *Напиши свой ответ текстом в чат:*"
-        bot.send_message(message.chat.id, msg_txt, parse_mode="Markdown", reply_markup=markup)
-        return
 
     # Админ-Панели
     if text == "🛠 Панель Админа" and (user_id == OWNER_ID or user_id in admins):
@@ -662,40 +564,40 @@ def handle_message(message):
         return
 
     try:
-        wait_msg = bot.send_message(message.chat.id, "⏳ Выполняется запрос к базе данных...")
+        wait_msg = bot.send_message(message.chat.id, "⏳ Подбираем информацию по профессии и ВУЗам...")
     except Exception:
         wait_msg = None
 
     if "Стипендии" in text or "Гранты" in text:
-        prompt_query = f"Расскажи про главные стипендии и гранты в {c_country}. Напиши точные суммы в долларах $, сомах, рублях или местной валюте."
+        prompt_query = f"Расскажи про главные стипендии и гранты в {c_country} для поступления студентов. Напиши точные суммы."
         search_query = f"стипендии гранты {c_country} обучение точные суммы 2026"
         query_photo = f"{c_country} university scholarship money diploma"
     elif "ВУЗ" in text or "Колледж" in text or "ЖОЖ" in text:
-        prompt_query = f"Назови 3 ведущих университета в {c_country} и укажи важную информацию о них."
+        prompt_query = f"Назови 3 ведущих университета и колледжа в {c_country} для выбора будущей профессии."
         search_query = f"топ университеты ВУЗы {c_country} 2026"
         query_photo = f"{c_country} top university campus building"
     elif "Лайфхак" in text or "Талаптар" in text:
-        prompt_query = f"Дай 3 важных рекомендации и требования для поступления в {c_country}."
+        prompt_query = f"Дай важные рекомендации и требования для выбора профессии и поступления в {c_country}."
         search_query = f"требования поступление в {c_country} 2026"
         query_photo = f"students university studying preparation"
     elif "Документ" in text:
-        prompt_query = f"Список основных 5 документов, необходимых для поступления в {c_country}."
+        prompt_query = f"Список основных документов, необходимых для поступления в ВУЗы {c_country}."
         search_query = f"документы для поступления в {c_country} 2026"
         query_photo = f"passport visa application documents"
     else:
         prompt_query = text
         search_query = text
-        query_photo = f"{text} news photo"
+        query_photo = f"{text} profession career student"
 
     web_data = search_web(search_query)
 
     sys_prompt = (
-        f"You are Barsbek 🐆 — a polite, highly competent, professional educational advisor and assistant.\n"
+        f"You are MyProfi KG 🎓 — a professional, highly competent career guidance and educational advisor.\n"
         f"Selected primary country: {c_country}. Language: {lang}.\n"
         f"FRESH WEB DATA:\n{web_data}\n\n"
         f"INSTRUCTIONS:\n"
-        f"1. DIRECT ANSWER RULE: Answer the user's specific prompt directly! If the user asks a general or specific question about another topic/country (e.g. 'Who is the president of Kyrgyzstan?'), ANSWER THAT QUESTION DIRECTLY using fresh web data. Do NOT force them back to {c_country} unless their question is explicitly about universities/scholarships.\n"
-        f"2. TONE: Maintain a polite, professional, business-oriented yet accessible tone. Avoid teenager slang.\n"
+        f"1. DIRECT ANSWER RULE: Answer the user's specific prompt directly! Help them choose a profession, career path, or university.\n"
+        f"2. TONE: Maintain a polite, professional, business-oriented yet accessible tone.\n"
         f"3. EMOJIS: Use emojis tastefully and neatly (🎓, 🏛️, 💰, 📌, ✅) to structure information clearly.\n"
         f"4. SCHOLARSHIPS: Always provide exact scholarship amounts when asked.\n"
         f"5. NO MARKDOWN: Strictly avoid markdown formatting (*, #, _)."
@@ -720,8 +622,8 @@ def handle_message(message):
     bot.send_message(message.chat.id, ai_response, reply_markup=get_reels_inline_buttons())
 
 # ==========================================
-# 9. ЗАПУСК БОТА
+# 8. ЗАПУСК БОТА
 # ==========================================
 if __name__ == "__main__":
-    print("Запуск обновленного бота Барсбек...")
+    print("Запуск профориентационного бота MyProfi KG...")
     bot.infinity_polling(timeout=20, long_polling_timeout=5)
