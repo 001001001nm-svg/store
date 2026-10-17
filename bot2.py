@@ -12,7 +12,7 @@ import requests
 from tavily import TavilyClient
 
 # ==========================================
-# 1. МИНИ ВЕБ-СЕРВЕР ДЛЯ RENDER (Статус UP)
+# 1. МИНИ ВЕБ-СЕРВЕР ДЛЯ RENDER (Статус UP 24/7)
 # ==========================================
 class SimpleHTTPRequestHandler(BaseHTTPRequestHandler):
     def do_GET(self):
@@ -144,6 +144,7 @@ def clean_ai_response(text):
     return res
 
 def ask_ai(prompt, system_instruction):
+    # 1. Запрос к OpenRouter
     if OPENROUTER_KEY and len(OPENROUTER_KEY) > 10:
         url = "https://openrouter.ai/api/v1/chat/completions"
         headers = {
@@ -167,32 +168,31 @@ def ask_ai(prompt, system_instruction):
                     {"role": "user", "content": prompt}
                 ],
                 "max_tokens": 1500,
-                "temperature": 0.3
+                "temperature": 0.2
             }
             try:
-                response = requests.post(url, headers=headers, json=data, timeout=25)
+                response = requests.post(url, headers=headers, json=data, timeout=20)
                 if response.status_code == 200:
                     res_data = response.json()
                     if 'choices' in res_data and len(res_data['choices']) > 0:
                         raw_content = res_data['choices'][0]['message']['content']
-                        if raw_content and raw_content.strip():
+                        if raw_content and len(raw_content.strip()) > 30:
                             return clean_ai_response(raw_content)
             except Exception as e:
                 print(f"Ошибка ИИ запроса ({model}): {e}")
                 continue
 
-    # Динамический резервный ответ строго под страну
-    country_tag = prompt.split("Страна: ")[-1] if "Страна: " in prompt else "Кыргызстан"
-    return (
-        f"🏛️ Список ведущих учебных заведений и проходные баллы в стране {country_tag}:\n\n"
-        f"1. Главный Национальный Университет — Проходной балл: Высокий / ОРТ 130+ / SAT 1200+\n"
-        f"2. Государственный Технический Университет — Проходной балл: ОРТ 120+ / SAT 1150+\n"
-        f"3. Международный Колледж Управления — Проходной балл: Внутренний экзамен / IELTS 5.5+\n"
-        f"4. Медицинская Академия — Проходной балл: Высокие баллы профильных предметов\n\n"
-        f"💰 Стипендии и Гранты:\n"
-        f"• Государственный бюджетный грант: 100% покрытие стоимости учебы + стипендия.\n"
-        f"• Академические скидки: 25% - 75% скидка за высокие баллы экзаменов."
-    )
+    # 2. Запасной прямой генератор (Pollinations) без шаблонных заготовок
+    try:
+        fallback_url = "https://text.pollinations.ai/"
+        full_p = f"{system_instruction}\n\nВОПРОС: {prompt}"
+        r = requests.get(f"{fallback_url}{requests.utils.quote(full_p)}", timeout=15)
+        if r.status_code == 200 and len(r.text) > 30:
+            return clean_ai_response(r.text)
+    except Exception as e:
+        print(f"Pollinations fallback error: {e}")
+
+    return "⚠️ В данный момент сервер ИИ перегружен. Пожалуйста, попробуйте нажать кнопку еще раз через 5 секунд."
 
 # ==========================================
 # 4. КЛАВИАТУРЫ
@@ -333,8 +333,8 @@ def handle_callbacks(call):
             bot.send_message(call.message.chat.id, "📸 Фото временно недоступно.", reply_markup=get_reels_inline_buttons())
             return
 
-        prompt = f"Напишите 1 ведущий университет СТРОГО в стране {c_country} и обязательно укажите минимальный проходной балл для поступления. Выбранная страна: {c_country}"
-        sys_prompt = f"КРИТИЧЕСКИ ВАЖНО: Отвечай СТРОГО И ИСКЛЮЧИТЕЛЬНО на языке: {c_lang}. Не используй Маркдаун (*, #, _). Используй красивое оформление и эмодзи ✨🎓."
+        prompt = f"Напишите 1 РЕАЛЬНЫЙ конкретный университет СТРОГО в стране {c_country} и его настоящий минимальный проходной балл. Страна: {c_country}"
+        sys_prompt = f"СТРОГИЙ ЯЗЫК: Отвечай ИСКЛЮЧИТЕЛЬНО на языке: {c_lang}. Называй только НАСТОЯЩИЕ университеты страны {c_country}. Запрещено придумать абстрактные названия. Без Маркдауна."
         ai_text = ask_ai(prompt, sys_prompt)
         photo_file = fetch_photo_bytes(f"{c_country} university building")
 
@@ -650,19 +650,19 @@ def handle_message(message):
     wait_msg = bot.send_message(message.chat.id, wait_msgs.get(lang, wait_msgs["🇷🇺 Русский"]))
 
     if "Стипендии" in text or "Гранты" in text or "Burslar" in text or "Scholarships" in text:
-        prompt_query = f"Напишите ВСЕ доступные стипендии, государственные гранты и бесплатное обучение СТРОГО в стране {c_country}. Укажите точные ежемесячные выплаты и условия. Выбранная страна: {c_country}"
-        search_query = f"стипендии гранты обучение {c_country} 2026"
+        prompt_query = f"Напишите ВСЕ реальные доступные стипендии, государственные гранты и программы бесплатного обучения СТРОГО в стране {c_country}. Укажите точные официальные названия программ, ежемесячные выплаты и требования. Страна: {c_country}"
+        search_query = f"стипендии гранты программы обучения {c_country} 2026"
         query_photo = f"{c_country} university scholarship diploma"
     elif "ВУЗ" in text or "Колледж" in text or "ЖОЖ" in text or "Üniversiteler" in text or "Universities" in text:
-        prompt_query = f"Перечислите ВСЕ ведущие университеты, институты и колледжи СТРОГО находящиеся в стране {c_country}. ОБЯЗАТЕЛЬНО: Напротив КАЖДОГО университета напишите минимальный проходной балл (ОРТ / SAT / HSK / YÖS / Внутренний экзамен). Выбранная страна: {c_country}"
-        search_query = f"список ВУЗов проходные баллы {c_country} 2026"
+        prompt_query = f"Перечислите ТОЛЬКО НАСТОЯЩИЕ ведущие университеты, институты и колледжи, находящиеся СТРОГО в стране {c_country} (например: для Кыргызстана — КНУ, КРСУ, АУЦА, КГТУ, Манас; для Турции — METU, Boğaziçi). Напротив КАЖДОГО университета обязательно напишите его настоящее официальное название и реальный минимальный проходной балл (ОРТ / SAT / HSK / YÖS). Страна: {c_country}"
+        search_query = f"настоящий список ВУЗов проходные баллы {c_country} 2026"
         query_photo = f"{c_country} top university campus building"
     elif "Лайфхак" in text or "Талаптар" in text or "Advice" in text or "Tavsiyeler" in text:
-        prompt_query = f"Дайте рекомендации по профориентации и условия поступления в ВУЗы страны {c_country}. Выбранная страна: {c_country}"
+        prompt_query = f"Дайте рекомендации по профориентации и условия поступления в ВУЗы страны {c_country}. Страна: {c_country}"
         search_query = f"условия поступления ВУЗы {c_country} 2026"
         query_photo = f"students studying preparation university"
     elif "Документ" in text or "Document" in text or "Belge" in text:
-        prompt_query = f"Напишите список обязательных документов для поступления в ВУЗы страны {c_country}. Выбранная страна: {c_country}"
+        prompt_query = f"Напишите список обязательных документов для поступления в ВУЗы страны {c_country}. Страна: {c_country}"
         search_query = f"документы для поступления {c_country} 2026"
         query_photo = f"passport visa application documents"
     else:
@@ -673,15 +673,16 @@ def handle_message(message):
     web_data = search_web(search_query)
 
     sys_prompt = (
-        f"КРИТИЧЕСКОЕ ПРАВИЛО ЯЗЫКА: Ты обязан писать весь свой ответ СТРОГО И ИСКЛЮЧИТЕЛЬНО на языке: {lang}.\n"
+        f"СТРОГИЙ ЯЗЫКОВОЙ ПРИКАЗ: Пиши весь ответ СТРОГО И ИСКЛЮЧИТЕЛЬНО на языке: {lang}.\n"
         f"Ты Барсбек 🐆 — профессиональный консультант по образованию.\n"
         f"ЦЕЛЕВАЯ СТРАНА: {c_country}.\n"
-        f"СВЕЖИЕ ДАННЫЕ ИЗ СЕТИ:\n{web_data}\n\n"
-        f"ИНСТРУКЦИИ:\n"
-        f"1. ВУЗЫ И БАЛЛЫ: Пиши ВУЗы СТРОГО находящиеся в стране: {c_country}! ВСЕГДА у каждого ВУЗа указывай минимальный проходной балл.\n"
-        f"2. СТИПЕНДИИ: Давай подробную информацию о грантах и выплатах в стране {c_country}.\n"
-        f"3. ЭМОДЗИ: Используй красивое оформление с эмодзи (🎓, 🏛️, 💰, 📌, ✅, ✨, 🚀).\n"
-        f"4. БЕЗ МАРКДАУНА: Категорически не используй символы (*, #, _, `), чтобы сообщение в Telegram выводилось идеально."
+        f"ДАННЫЕ ИЗ СЕТИ:\n{web_data}\n\n"
+        f"ПРАВИЛА ОТВЕТА:\n"
+        f"1. НАСТОЯЩИЕ ВУЗЫ: Используй ТОЛЬКО РЕАЛЬНЫЕ названия университетов страны {c_country}! КАТЕГОРИЧЕСКИ ЗАПРЕЩЕНО использовать вымышленные шаблоны вроде 'Главный Национальный Университет' или 'Государственный Технический Университет'. Пиши реальные аббревиатуры и названия!\n"
+        f"2. ПРОХОДНЫЕ БАЛЛЫ: Около каждого ВУЗа укажи реальный проходной балл (например, ОРТ 110-180+ или SAT 1200+).\n"
+        f"3. СТИПЕНДИИ И ГРАНТЫ: Указывай реальные программы выплат для страны {c_country}.\n"
+        f"4. ОФОРМЛЕНИЕ: Пиши с красивыми эмодзи (🎓, 🏛️, 💰, 📌, ✅, ✨, 🚀).\n"
+        f"5. БЕЗ МАРКДАУНА: Не используй спецсимволы (*, #, _, `) для форматирования текста."
     )
 
     ai_response = ask_ai(prompt_query, sys_prompt)
