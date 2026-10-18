@@ -80,6 +80,7 @@ def init_db():
                         photo TEXT
                     )
                 """)
+                # на случай, если таблицы остались от старой версии
                 ensure_columns(conn, "products", {"unit": "TEXT", "price": "REAL", "photo": "TEXT", "discount": "TEXT", "category": "TEXT"})
                 ensure_columns(conn, "advertisements", {"content": "TEXT", "photo": "TEXT"})
                 conn.execute("""
@@ -163,16 +164,6 @@ def can_manage(user_id):
         return True
     data = get_user(user_id)
     return bool(data and data[1] == 1)
-
-def fmt_price(val):
-    try:
-        if val is None:
-            return "0"
-        if isinstance(val, float) and val.is_integer():
-            return str(int(val))
-        return str(val)
-    except:
-        return str(val)
 
 class RegState(StatesGroup):
     waiting_for_name = State()
@@ -286,6 +277,9 @@ async def back_to_main(message: types.Message, state: FSMContext):
     kb = main_menu_kb(user_id == SUPER_ADMIN_ID, is_admin)
     await message.answer("Главное меню:", reply_markup=kb)
 
+# ============================================================
+#  ВСПОМОГАТЕЛЬНОЕ ДЛЯ СПИСКОВ (с кнопками удаления)
+# ============================================================
 def build_list(title, items, prefix, empty_text):
     if not items:
         return empty_text, None
@@ -307,6 +301,9 @@ def back_row_kb(extra_rows):
     rows.append([types.KeyboardButton(text="🔙 Главное меню")])
     return types.ReplyKeyboardMarkup(keyboard=rows, resize_keyboard=True)
 
+# ============================================================
+#  📦 УПРАВЛЕНИЕ ТОВАРАМИ
+# ============================================================
 def products_menu_kb():
     return back_row_kb([
         [types.KeyboardButton(text="➕ Добавить товар"), types.KeyboardButton(text="📋 Список товаров")],
@@ -448,6 +445,9 @@ async def add_product_skip_photo(message: types.Message, state: FSMContext):
 async def add_product_photo_wrong(message: types.Message):
     await message.answer("Отправь фото или нажми «Пропустить».")
 
+# ============================================================
+#  📁 КАТАЛОГИ
+# ============================================================
 def catalogs_menu_kb():
     return back_row_kb([
         [types.KeyboardButton(text="➕ Добавить каталог"), types.KeyboardButton(text="📋 Список каталогов")],
@@ -502,6 +502,9 @@ async def add_catalog_name(message: types.Message, state: FSMContext):
     await state.clear()
     await message.answer(f"✅ Каталог «{name}» добавлен.", reply_markup=catalogs_menu_kb())
 
+# ============================================================
+#  🏷 СКИДКИ
+# ============================================================
 @dp.message(F.text == "🏷 Скидки")
 async def discounts_menu(message: types.Message, state: FSMContext):
     if not can_manage(message.from_user.id):
@@ -517,282 +520,4 @@ async def discounts_menu(message: types.Message, state: FSMContext):
         buttons.append([types.InlineKeyboardButton(text=label[:45], callback_data=f"disc:{pid}")])
     await message.answer(
         "🏷 Выбери товар, чтобы поставить или убрать скидку:",
-        reply_markup=types.InlineKeyboardMarkup(inline_keyboard=buttons)
-    )
-
-@dp.callback_query(F.data.startswith("disc:"))
-async def discount_pick(call: types.CallbackQuery, state: FSMContext):
-    if not can_manage(call.from_user.id):
-        await call.answer("Нет доступа", show_alert=True)
-        return
-    pid = int(call.data.split(":")[1])
-    await state.set_state(DiscountState.waiting_for_value)
-    await state.update_data(product_id=pid)
-    await call.answer()
-    await call.message.answer("Введи скидку (например 10 или 10%). Чтобы убрать скидку — отправь 0:")
-
-@dp.message(DiscountState.waiting_for_value, F.text)
-async def discount_value(message: types.Message, state: FSMContext):
-    data = await state.get_data()
-    value = message.text.strip()
-    if value in ("0", "-", "нет", "Нет"):
-        db_run("UPDATE products SET discount = NULL WHERE id = ?", (data.get("product_id"),))
-        await message.answer("✅ Скидка убрана.")
-    else:
-        if value.replace(".", "", 1).isdigit():
-            value += "%"
-        db_run("UPDATE products SET discount = ? WHERE id = ?", (value, data.get("product_id")))
-        await message.answer(f"✅ Скидка {value} установлена.")
-    await state.clear()
-
-def ads_menu_kb():
-    return back_row_kb([
-        [types.KeyboardButton(text="➕ Добавить рекламу"), types.KeyboardButton(text="📋 Список рекламы")],
-    ])
-
-def ads_view():
-    rows = db_all("SELECT id, title, content FROM advertisements ORDER BY id")
-    items = [(aid, f"{title} — {content}", str(title)) for aid, title, content in rows]
-    return build_list("📢 Реклама (нажми ❌, чтобы удалить):", items, "dela", "Рекламы пока нет.")
-
-@dp.message(F.text == "📢 Реклама")
-async def ads_menu(message: types.Message, state: FSMContext):
-    if not can_manage(message.from_user.id):
-        return
-    await state.clear()
-    await message.answer("📢 Реклама:", reply_markup=ads_menu_kb())
-
-@dp.message(F.text == "📋 Список рекламы")
-async def ads_list(message: types.Message, state: FSMContext):
-    if not can_manage(message.from_user.id):
-        return
-    await state.clear()
-    text, kb = ads_view()
-    await message.answer(text, reply_markup=kb)
-
-@dp.callback_query(F.data.startswith("dela:"))
-async def delete_ad(call: types.CallbackQuery):
-    if not can_manage(call.from_user.id):
-        await call.answer("Нет доступа", show_alert=True)
-        return
-    db_run("DELETE FROM advertisements WHERE id = ?", (int(call.data.split(":")[1]),))
-    await call.answer("Реклама удалена")
-    text, kb = ads_view()
-    await refresh_inline(call, text, kb)
-
-@dp.message(F.text == "➕ Добавить рекламу")
-async def add_ad_start(message: types.Message, state: FSMContext):
-    if not can_manage(message.from_user.id):
-        return
-    await state.clear()
-    await state.set_state(AdState.waiting_for_title)
-    await message.answer("Введи заголовок рекламы:", reply_markup=back_row_kb([]))
-
-@dp.message(AdState.waiting_for_title, F.text)
-async def add_ad_title(message: types.Message, state: FSMContext):
-    await state.update_data(title=message.text.strip())
-    await state.set_state(AdState.waiting_for_content)
-    await message.answer("Введи текст рекламы:")
-
-@dp.message(AdState.waiting_for_content, F.text)
-async def add_ad_content(message: types.Message, state: FSMContext):
-    data = await state.get_data()
-    db_run(
-        "INSERT INTO advertisements (title, content, photo) VALUES (?, ?, NULL)",
-        (data.get("title"), message.text.strip())
-    )
-    await state.clear()
-    await message.answer("✅ Реклама добавлена и уже на сайте.", reply_markup=ads_menu_kb())
-
-def admins_view():
-    rows = db_all("SELECT user_id, name, username FROM users WHERE is_admin = 1 AND user_id != ?", (SUPER_ADMIN_ID,))
-    items = [(uid, f"{name} (@{username}) — {uid}", str(name)) for uid, name, username in rows]
-    return build_list("👥 Админы (нажми ❌, чтобы снять права):", items, "deladm", "Других админов пока нет.")
-
-@dp.message(F.text == "➕ Назначить админа")
-async def add_admin_start(message: types.Message, state: FSMContext):
-    if message.from_user.id != SUPER_ADMIN_ID:
-        return
-    await state.set_state(OwnerState.waiting_for_admin_input)
-    await message.answer("Введи Telegram ID нового админа (числом):")
-
-@dp.message(OwnerState.waiting_for_admin_input, F.text)
-async def add_admin_input(message: types.Message, state: FSMContext):
-    if message.from_user.id != SUPER_ADMIN_ID:
-        return
-    text = message.text.strip()
-    if not text.isdigit():
-        await message.answer("ID должен быть числом. Попробуй ещё раз:")
-        return
-    uid = int(text)
-    if get_user(uid):
-        set_admin_status(uid, 1)
-    else:
-        db_run("INSERT OR IGNORE INTO users (user_id, name, username, is_admin) VALUES (?, ?, ?, 1)", (uid, "Админ", "нет юзернейма"))
-    await state.clear()
-    await message.answer(f"✅ Пользователь {uid} назначен админом.")
-
-@dp.message(F.text == "👥 Список админов")
-async def admins_list(message: types.Message, state: FSMContext):
-    if message.from_user.id != SUPER_ADMIN_ID:
-        return
-    await state.clear()
-    text, kb = admins_view()
-    await message.answer(text, reply_markup=kb)
-
-@dp.callback_query(F.data.startswith("deladm:"))
-async def delete_admin(call: types.CallbackQuery):
-    if call.from_user.id != SUPER_ADMIN_ID:
-        await call.answer("Нет доступа", show_alert=True)
-        return
-    set_admin_status(int(call.data.split(":")[1]), 0)
-    await call.answer("Права сняты")
-    text, kb = admins_view()
-    await refresh_inline(call, text, kb)
-
-DELIVERY_FEE = 150
-LOCAL_TZ = timezone(timedelta(hours=6))
-
-def now_local():
-    return datetime.now(LOCAL_TZ)
-
-def order_text(row):
-    oid, name, phone, address, items, delivery, total, created = row
-    try:
-        dt = datetime.strptime(created, "%Y-%m-%d %H:%M:%S").strftime("%d.%m.%Y %H:%M")
-    except Exception:
-        dt = created
-    return (
-        f"🛒 Заказ №{oid}\n🕒 {dt}\n\n"
-        f"👤 {name}\n📞 {phone}\n📍 {address}\n\n"
-        f"{items}\n\n"
-        f"Доставка: {fmt_price(delivery)} сом\n"
-        f"💰 Итого: {fmt_price(total)} сом"
-    )
-
-def done_kb(order_id):
-    return types.InlineKeyboardMarkup(inline_keyboard=[[
-        types.InlineKeyboardButton(text="✅ Заказ выполнен", callback_data=f"done:{order_id}")
-    ]])
-
-ORDER_FIELDS = "id, name, phone, address, items, delivery, total, created_at"
-
-def track_order_msg(order_id, chat_id, message_id):
-    db_run("INSERT INTO order_msgs (order_id, chat_id, message_id) VALUES (?, ?, ?)", (order_id, chat_id, message_id))
-
-async def notify_admins(order_id):
-    rows = db_all(f"SELECT {ORDER_FIELDS} FROM orders WHERE id = ?", (order_id,))
-    if not rows:
-        return
-    text = order_text(rows[0])
-    ids = {SUPER_ADMIN_ID} | {r[0] for r in db_all("SELECT user_id FROM users WHERE is_admin = 1")}
-    for chat_id in ids:
-        try:
-            sent = await bot.send_message(chat_id, text, reply_markup=done_kb(order_id))
-            track_order_msg(order_id, chat_id, sent.message_id)
-        except Exception as e:
-            logging.warning(f"Не удалось отправить заказ {order_id} в чат {chat_id}: {e}")
-
-@dp.message(F.text == "📋 Актуальные заказы")
-async def active_orders(message: types.Message, state: FSMContext):
-    if not can_manage(message.from_user.id):
-        return
-    await state.clear()
-    rows = db_all(f"SELECT {ORDER_FIELDS} FROM orders WHERE status = 'new' ORDER BY id")
-    if not rows:
-        await message.answer("Актуальных заказов нет.")
-        return
-    for row in rows:
-        sent = await message.answer(order_text(row), reply_markup=done_kb(row[0]))
-        track_order_msg(row[0], message.chat.id, sent.message_id)
-        await asyncio.sleep(0.05)
-
-@dp.callback_query(F.data.startswith("done:"))
-async def order_done(call: types.CallbackQuery):
-    if not can_manage(call.from_user.id):
-        await call.answer("Нет доступа", show_alert=True)
-        return
-    order_id = int(call.data.split(":")[1])
-    db_run(
-        "UPDATE orders SET status = 'done', done_at = ? WHERE id = ? AND status = 'new'",
-        (now_local().strftime("%Y-%m-%d %H:%M:%S"), order_id)
-    )
-    msgs = db_all("SELECT chat_id, message_id FROM order_msgs WHERE order_id = ?", (order_id,))
-    deleted_current = False
-    for chat_id, msg_id in msgs:
-        try:
-            await bot.delete_message(chat_id, msg_id)
-            if call.message and chat_id == call.message.chat.id and msg_id == call.message.message_id:
-                deleted_current = True
-        except Exception as e:
-            logging.info(f"delete skipped: {e}")
-    db_run("DELETE FROM order_msgs WHERE order_id = ?", (order_id,))
-    if not deleted_current and call.message:
-        try:
-            await call.message.delete()
-        except Exception:
-            try:
-                await call.message.edit_text(f"✅ Заказ №{order_id} выполнен и перенесён в архив.")
-            except Exception:
-                pass
-    await call.answer("Заказ перенесён в архив")
-
-def archive_chunks(rows):
-    chunks, current, last_date = [], "🗃 Архив заказов (последние 3 дня)\n", None
-    for oid, name, phone, address, items, delivery, total, created in rows:
-        day = created[:10]
-        block = ""
-        if day != last_date:
-            try:
-                pretty = datetime.strptime(day, "%Y-%m-%d").strftime("%d.%m.%Y")
-            except Exception:
-                pretty = day
-            block += f"\n📅 {pretty}\n"
-            last_date = day
-        block += f"\n№{oid} · {created[11:16]}\n👤 {name} · 📞 {phone}\n📍 {address}\n{items}\n💰 {fmt_price(total)} сом\n"
-        if len(current) + len(block) > 3800:
-            chunks.append(current)
-            current, last_date = block, None
-        else:
-            current += block
-    if current:
-        chunks.append(current)
-    return chunks
-
-@dp.message(F.text == "🗃 Архив заказов")
-async def archive_orders(message: types.Message, state: FSMContext):
-    if not can_manage(message.from_user.id):
-        return
-    await state.clear()
-    cutoff = (now_local() - timedelta(days=3)).strftime("%Y-%m-%d %H:%M:%S")
-    db_run("DELETE FROM orders WHERE status = 'done' and created_at < ?", (cutoff,))
-    rows = db_all(f"SELECT {ORDER_FIELDS} FROM orders WHERE status = 'done' ORDER BY created_at ASC, id ASC")
-    if not rows:
-        await message.answer("Архив заказов пуст.")
-        return
-    for chunk in archive_chunks(rows):
-        await message.answer(chunk)
-        await asyncio.sleep(0.05)
-
-# Веб-сервер для поддержки сайта/вебхуков на Render
-async def handle_root(request):
-    return web.Response(text="Bot is running")
-
-async def web_server():
-    app = web.Application()
-    app.router.add_get("/", handle_root)
-    runner = web.AppRunner(app)
-    await runner.setup()
-    port = int(os.environ.get("PORT", 8080))
-    site = web.TCPSite(runner, "0.0.0.0", port)
-    await site.start()
-
-async def main():
-    await web_server()
-    await dp.start_polling(bot)
-
-if __name__ == "__main__":
-    asyncio.run(main())
-
-# Наши соц сети
-# instagram : @shveimag_kyrgyzstan
+        reply_markup=types.Inline
