@@ -26,10 +26,12 @@ logging.basicConfig(level=logging.INFO)
 #  DB_PATH        - путь к базе (при Persistent Disk, напр. /data/store.db)
 #  SHOP_PHONE     - телефон магазина для футера сайта
 # ============================================================
-BOT_TOKEN = os.environ.get("BOT_TOKEN", "8708493966:AAFfGohPh6jmyuWopT57LQVn-bQ_NNMt_7E")
+BOT_TOKEN = os.environ.get("BOT_TOKEN")
+if not BOT_TOKEN:
+    raise SystemExit("Не задана переменная окружения BOT_TOKEN (Render -> Environment).")
 SUPER_ADMIN_ID = int(os.environ.get("SUPER_ADMIN_ID", "8636623905"))
 DB_PATH = os.environ.get("DB_PATH", "store.db")
-SHOP_PHONE = os.environ.get("SHOP_PHONE", "+996 700 000 000")
+SHOP_PHONE = os.environ.get("SHOP_PHONE", "+996 707 341 526")
 
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher(storage=MemoryStorage())
@@ -69,7 +71,10 @@ def init_db():
                         price REAL,
                         photo TEXT,
                         discount TEXT,
-                        category TEXT
+                        category TEXT,
+                        description TEXT,
+                        options TEXT,
+                        stock INTEGER
                     )
                 """)
                 conn.execute("""
@@ -81,7 +86,7 @@ def init_db():
                     )
                 """)
                 # на случай, если таблицы остались от старой версии
-                ensure_columns(conn, "products", {"unit": "TEXT", "price": "REAL", "photo": "TEXT", "discount": "TEXT", "category": "TEXT"})
+                ensure_columns(conn, "products", {"unit": "TEXT", "price": "REAL", "photo": "TEXT", "discount": "TEXT", "category": "TEXT", "description": "TEXT", "options": "TEXT", "stock": "INTEGER"})
                 ensure_columns(conn, "advertisements", {"content": "TEXT", "photo": "TEXT"})
                 conn.execute("""
                     CREATE TABLE IF NOT EXISTS orders (
@@ -176,6 +181,9 @@ class ProductState(StatesGroup):
     waiting_for_name = State()
     waiting_for_unit = State()
     waiting_for_price = State()
+    waiting_for_stock = State()
+    waiting_for_description = State()
+    waiting_for_options = State()
     waiting_for_photo = State()
 
 class CategoryState(StatesGroup):
@@ -185,6 +193,9 @@ class DiscountState(StatesGroup):
     waiting_for_value = State()
 
 class PriceState(StatesGroup):
+    waiting_for_value = State()
+
+class StockState(StatesGroup):
     waiting_for_value = State()
 
 class AdState(StatesGroup):
@@ -344,18 +355,23 @@ def back_row_kb(extra_rows):
 def products_menu_kb():
     return back_row_kb([
         [types.KeyboardButton(text="➕ Добавить товар"), types.KeyboardButton(text="📋 Список товаров")],
-        [types.KeyboardButton(text="💲 Сменить цену"), types.KeyboardButton(text="🗑 Убрать все товары")],
+        [types.KeyboardButton(text="💲 Сменить цену"), types.KeyboardButton(text="🔢 Изменить кол-во")],
+        [types.KeyboardButton(text="🗑 Убрать все товары")],
     ])
 
+def fmt_stock(value):
+    return "—" if value is None else f"{int(value)} шт"
+
 def products_view():
-    rows = db_all("SELECT id, name, unit, price, discount, category FROM products ORDER BY id")
+    rows = db_all("SELECT id, name, unit, price, discount, category, stock FROM products ORDER BY id")
     items = []
-    for pid, name, unit, price, disc, cat in rows:
+    for pid, name, unit, price, disc, cat, stock in rows:
         line = f"{name} — {price} сом/{unit or 'шт'}"
         if disc:
             line += f" (скидка {disc})"
         if cat:
             line += f" [{cat}]"
+        line += f" | в наличии: {fmt_stock(stock)}"
         items.append((pid, line, str(name)))
     return build_list("📋 Товары (нажми ❌, чтобы удалить):", items, "delp", "Товаров пока нет.")
 
@@ -408,6 +424,7 @@ async def delete_all_products(call: types.CallbackQuery):
         await call.answer("Отменено")
         await refresh_inline(call, "Отменено.", None)
 
+# ---------- смена цены ----------
 @dp.message(F.text == "💲 Сменить цену")
 async def change_price_menu(message: types.Message, state: FSMContext):
     if not can_manage(message.from_user.id):
@@ -442,6 +459,87 @@ async def price_pick(call: types.CallbackQuery, state: FSMContext):
     await call.answer()
     await call.message.answer(f"Введи новую цену для «{name}» (сейчас {fmt_price(price)} сом):")
 
+@dp.message(PriceState.waiting_for_value, F.text)
+async def price_value(message: types.Message, state: FSMContext):
+    data = await state.get_data()
+    try:
+        price = float(message.text.replace(",", ".").replace(" ", ""))
+        if price < 0:
+            raise ValueError
+    except ValueError:
+        await message.answer("Введи цену числом, например 120 или 99.5")
+        return
+    pid = data.get("product_id")
+    rows = db_all("SELECT name FROM products WHERE id = ?", (pid,))
+    await state.clear()
+    if not rows:
+        await message.answer("Этот товар уже удалён.", reply_markup=products_menu_kb())
+        return
+    db_run("UPDATE products SET price = ? WHERE id = ?", (price, pid))
+    await message.answer(
+        f"✅ Цена товара «{rows[0][0]}» изменена на {fmt_price(price)} сом. Она уже на сайте.",
+        reply_markup=products_menu_kb()
+    )
+
+# ---------- изменение количества (штук) ----------
+@dp.message(F.text == "🔢 Изменить кол-во")
+async def change_stock_menu(message: types.Message, state: FSMContext):
+    if not can_manage(message.from_user.id):
+        return
+    await state.clear()
+    rows = db_all("SELECT id, name, stock FROM products ORDER BY id")
+    if not rows:
+        await message.answer("Товаров пока нет. Сначала добавь товары.")
+        return
+    chunks = [rows[i:i + 50] for i in range(0, len(rows), 50)]
+    for n, chunk in enumerate(chunks):
+        buttons = [
+            [
+                types.InlineKeyboardButton(text=f"{str(name)[:25]} — {fmt_stock(stock)}", callback_data="noop"),
+                types.InlineKeyboardButton(text="✏️ Изменить кол-во", callback_data=f"stock:{pid}"),
+            ]
+            for pid, name, stock in chunk
+        ]
+        title = "🔢 Выбери товар, чтобы изменить количество:" if n == 0 else "…продолжение списка:"
+        await message.answer(title, reply_markup=types.InlineKeyboardMarkup(inline_keyboard=buttons))
+
+@dp.callback_query(F.data == "noop")
+async def noop_callback(call: types.CallbackQuery):
+    await call.answer()
+
+@dp.callback_query(F.data.startswith("stock:"))
+async def stock_pick(call: types.CallbackQuery, state: FSMContext):
+    if not can_manage(call.from_user.id):
+        await call.answer("Нет доступа", show_alert=True)
+        return
+    pid = int(call.data.split(":")[1])
+    rows = db_all("SELECT name, stock FROM products WHERE id = ?", (pid,))
+    if not rows:
+        await call.answer("Товар не найден", show_alert=True)
+        return
+    name, stock = rows[0]
+    await state.set_state(StockState.waiting_for_value)
+    await state.update_data(product_id=pid)
+    await call.answer()
+    await call.message.answer(f"Введи новое количество штук для «{name}» (сейчас {fmt_stock(stock)}):")
+
+@dp.message(StockState.waiting_for_value, F.text)
+async def stock_value(message: types.Message, state: FSMContext):
+    data = await state.get_data()
+    text = message.text.strip()
+    if not text.isdigit() or int(text) > 1000000:
+        await message.answer("Введи количество целым числом, например 25")
+        return
+    pid = data.get("product_id")
+    rows = db_all("SELECT name FROM products WHERE id = ?", (pid,))
+    await state.clear()
+    if not rows:
+        await message.answer("Этот товар уже удалён.", reply_markup=products_menu_kb())
+        return
+    db_run("UPDATE products SET stock = ? WHERE id = ?", (int(text), pid))
+    await message.answer(f"✅ Количество «{rows[0][0]}» теперь {int(text)} шт.", reply_markup=products_menu_kb())
+
+# ---------- добавление товара ----------
 @dp.message(F.text == "➕ Добавить товар")
 async def add_product_start(message: types.Message, state: FSMContext):
     if not can_manage(message.from_user.id):
@@ -486,21 +584,75 @@ async def add_product_price(message: types.Message, state: FSMContext):
         await message.answer("Введи цену числом, например 120 или 99.5")
         return
     await state.update_data(price=price)
+    await state.set_state(ProductState.waiting_for_stock)
+    await message.answer("Сколько всего штук этого товара в наличии? (целое число, например 25)")
+
+@dp.message(ProductState.waiting_for_stock, F.text)
+async def add_product_stock(message: types.Message, state: FSMContext):
+    text = message.text.strip()
+    if not text.isdigit() or int(text) > 1000000:
+        await message.answer("Введи количество штук целым числом, например 25")
+        return
+    await state.update_data(stock=int(text))
+    await state.set_state(ProductState.waiting_for_description)
+    await message.answer(
+        "Введи описание товара (оно будет на сайте) или нажми «Пропустить»:",
+        reply_markup=back_row_kb([[types.KeyboardButton(text="Пропустить")]])
+    )
+
+@dp.message(ProductState.waiting_for_stock)
+async def add_product_stock_wrong(message: types.Message):
+    await message.answer("Введи количество штук числом, например 25")
+
+@dp.message(ProductState.waiting_for_description, F.text)
+async def add_product_description(message: types.Message, state: FSMContext):
+    text = message.text.strip()
+    await state.update_data(description="" if text == "Пропустить" else text[:1000])
+    await state.set_state(ProductState.waiting_for_options)
+    await message.answer(
+        "Введи опции товара через запятую (например: Красный, Синий, Белый или S, M, L). "
+        "Покупатель выберет одну из них кнопкой на сайте.\nЕсли опций нет — нажми «Пропустить»:",
+        reply_markup=back_row_kb([[types.KeyboardButton(text="Пропустить")]])
+    )
+
+@dp.message(ProductState.waiting_for_description)
+async def add_product_description_wrong(message: types.Message):
+    await message.answer("Отправь описание текстом или нажми «Пропустить».")
+
+@dp.message(ProductState.waiting_for_options, F.text)
+async def add_product_options(message: types.Message, state: FSMContext):
+    text = message.text.strip()
+    options = []
+    if text != "Пропустить":
+        for part in re.split(r"[,;\n]+", text):
+            part = part.strip()[:30]
+            if part and part not in options:
+                options.append(part)
+        options = options[:12]
+        if not options:
+            await message.answer("Не получилось разобрать опции. Введи их через запятую или нажми «Пропустить».")
+            return
+    await state.update_data(options=json.dumps(options, ensure_ascii=False) if options else "")
     await state.set_state(ProductState.waiting_for_photo)
     await message.answer(
         "Отправь фото товара или нажми «Пропустить»:",
         reply_markup=back_row_kb([[types.KeyboardButton(text="Пропустить")]])
     )
 
+@dp.message(ProductState.waiting_for_options)
+async def add_product_options_wrong(message: types.Message):
+    await message.answer("Отправь опции текстом через запятую или нажми «Пропустить».")
+
 async def save_product(message: types.Message, state: FSMContext, photo):
     data = await state.get_data()
     db_run(
-        "INSERT INTO products (name, unit, price, photo, discount, category) VALUES (?, ?, ?, ?, NULL, ?)",
-        (data.get("name"), data.get("unit"), data.get("price"), photo, data.get("category", ""))
+        "INSERT INTO products (name, unit, price, photo, discount, category, description, options, stock) VALUES (?, ?, ?, ?, NULL, ?, ?, ?, ?)",
+        (data.get("name"), data.get("unit"), data.get("price"), photo, data.get("category", ""),
+         data.get("description") or None, data.get("options") or None, data.get("stock"))
     )
     await state.clear()
     await message.answer(
-        f"✅ Товар «{data.get('name')}» добавлен! Он уже на сайте.",
+        f"✅ Товар «{data.get('name')}» добавлен ({data.get('stock', 0)} шт в наличии)! Он уже на сайте.",
         reply_markup=products_menu_kb()
     )
 
@@ -873,30 +1025,8 @@ async def archive_orders(message: types.Message, state: FSMContext):
     for chunk in archive_chunks(rows):
         await message.answer(chunk)
 
-@dp.message(PriceState.waiting_for_value, F.text)
-async def price_value(message: types.Message, state: FSMContext):
-    data = await state.get_data()
-    try:
-        price = float(message.text.replace(",", ".").replace(" ", ""))
-        if price < 0:
-            raise ValueError
-    except ValueError:
-        await message.answer("Введи цену числом, например 120 или 99.5")
-        return
-    pid = data.get("product_id")
-    rows = db_all("SELECT name FROM products WHERE id = ?", (pid,))
-    await state.clear()
-    if not rows:
-        await message.answer("Этот товар уже удалён.", reply_markup=products_menu_kb())
-        return
-    db_run("UPDATE products SET price = ? WHERE id = ?", (price, pid))
-    await message.answer(
-        f"✅ Цена товара «{rows[0][0]}» изменена на {fmt_price(price)} сом. Она уже на сайте.",
-        reply_markup=products_menu_kb()
-    )
-
 # ============================================================
-#  ВЕБ-СЕРВЕР И САЙТ «ШВЕЙМАГ КЫРГЫЗСТАНА»
+#  ВЕБ-СЕРВЕР И САЙТ «ШВЕЙМАГ KG»
 # ============================================================
 def esc(value):
     return html.escape("" if value is None else str(value))
@@ -916,7 +1046,7 @@ PAGE_HEAD = """<!DOCTYPE html>
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Швеймаг Кыргызстана</title>
+    <title>Швеймаг Kg</title>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
     <style>
         :root { --leaf: #7fb896; --mint: #ecf5ef; --mint-mid: #cfe5d7; --forest: #20613f; --forest-dark: #14452c; --forest-deep: #0e3a23; --ink: #10291b; --coral: #ff7a59; }
@@ -1002,6 +1132,15 @@ PAGE_HEAD = """<!DOCTYPE html>
         .add-btn { position: relative; z-index: 2; background: var(--forest); color: white; border: none; padding: 10px; border-radius: 10px; cursor: pointer; font-weight: 600; width: 100%; transition: background 0.2s; }
         .add-btn:hover { background: var(--forest-dark); }
 
+        .product-desc { position: relative; z-index: 2; font-size: 13px; color: #4d7059; line-height: 1.45; margin: -2px 0 10px; display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; cursor: pointer; padding-right: 4px; white-space: pre-line; }
+        .desc-more { position: relative; z-index: 2; display: inline-block; color: var(--forest); font-size: 12px; font-weight: 600; cursor: pointer; margin: -4px 0 10px; }
+        .opt-label { position: relative; z-index: 2; font-size: 12px; color: #5b7f69; font-weight: 600; margin-bottom: 6px; }
+        .opt-row { position: relative; z-index: 2; display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 14px; }
+        .opt-btn { border: 1.5px solid var(--leaf); background: #fff; color: var(--forest-dark); border-radius: 18px; padding: 5px 12px; font-size: 13px; font-weight: 600; cursor: pointer; font-family: inherit; transition: all 0.15s; }
+        .opt-btn:hover { background: var(--mint); }
+        .opt-btn.on { background: var(--forest); border-color: var(--forest); color: #fff; }
+        .cart-item-opt { font-weight: 500; color: #5b7f69; }
+
         /* КОРЗИНА И САЙДБАР */
         .cart-overlay { position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(16,41,27,0.45); display: none; z-index: 1000; backdrop-filter: blur(2px); }
         .cart-sidebar { position: fixed; top: 0; right: -420px; width: 100%; max-width: 420px; height: 100%; background: white; z-index: 1001; transition: right 0.3s ease; display: flex; flex-direction: column; box-shadow: -6px 0 20px rgba(0,0,0,0.15); }
@@ -1053,7 +1192,7 @@ PAGE_HEAD = """<!DOCTYPE html>
 </head>
 <body>
     <header>
-        <div class="logo"><span class="spool">🧵</span> Швеймаг Кыргызстана</div>
+        <div class="logo"><span class="spool">🧵</span> Швеймаг Kg</div>
         <button class="cart-btn-header" onclick="openCart()">
             🛍 Корзина <span class="cart-badge" id="cartBadge">0</span>
         </button>
@@ -1121,7 +1260,7 @@ PAGE_MIDDLE = r"""
     <footer>
         <div class="footer-content">
             <div class="footer-col">
-                <h4>🧵 Швеймаг Кыргызстана</h4>
+                <h4>🧵 Швеймаг Kg</h4>
                 <p>Всё для шитья и рукоделия: нитки, иглы, фурнитура, инструменты и аксессуары. Удобный заказ онлайн и доставка прямо к вашей двери.</p>
             </div>
             <div class="footer-col">
@@ -1138,7 +1277,7 @@ PAGE_MIDDLE = r"""
             </div>
         </div>
         <div class="footer-bottom">
-            © 2026 Швеймаг Кыргызстана. Все права защищены.
+            © 2026 Швеймаг Kg. Все права защищены.
         </div>
     </footer>
 
@@ -1156,7 +1295,7 @@ PAGE_MIDDLE = r"""
         let favs = loadJSON('favs', []);
 
         const INFO = {
-            about: ['О нас', 'Швеймаг Кыргызстана — интернет-магазин товаров для шитья и рукоделия. Здесь есть всё, без чего не обойтись ни опытной швее, ни тому, кто только берёт в руки иголку: нитки, иглы, фурнитура, инструменты и многое другое.\n\nМы хотим, чтобы за нужной мелочью — катушкой подходящего оттенка, молнией или запасной иглой — не приходилось ездить по всему городу. Выбирайте товары на сайте, оформляйте заказ, а остальное мы берём на себя. Ассортимент постоянно пополняется.'],
+            about: ['О нас', 'Швеймаг Kg — интернет-магазин товаров для шитья и рукоделия. Здесь есть всё, без чего не обойтись ни опытной швее, ни тому, кто только берёт в руки иголку: нитки, иглы, фурнитура, инструменты и многое другое.\n\nМы хотим, чтобы за нужной мелочью — катушкой подходящего оттенка, молнией или запасной иглой — не приходилось ездить по всему городу. Выбирайте товары на сайте, оформляйте заказ, а остальное мы берём на себя. Ассортимент постоянно пополняется.'],
             order: ['Как сделать заказ', '1. Найдите нужный товар через поиск или выберите каталог.\n2. Нажмите «В корзину» на карточке товара. Понравившееся можно отметить сердечком ♡.\n3. Откройте корзину, проверьте количество и укажите имя, номер телефона и адрес доставки.\n4. Нажмите «Оформить заказ» — мы получим его сразу и свяжемся с вами для подтверждения.'],
             delivery: ['Доставка и оплата', `Мы доставляем заказы по городу прямо к двери. Стоимость доставки — ${DELIVERY_FEE} сом.\n\nОплата производится при получении заказа. Номер телефона нужен, чтобы курьер мог с вами связаться, поэтому указывайте действующий номер.`],
             tips: ['Советы швее 🪡', '1. Подбирайте иглу под ткань: тонкие номера (60–70) — для шёлка и тонкого хлопка, средние (80–90) — для обычных тканей, толстые (100–110) — для джинсы и плотных материалов.\n2. Нитки лучше брать на тон темнее ткани: на самой ткани стежки выглядят светлее, чем на катушке.\n3. Перед раскроем постирайте и прогладьте ткань, чтобы готовое изделие потом не село.\n4. Меняйте иглу примерно через 6–8 часов шитья или если она задела булавку: тупая игла портит ткань и пропускает стежки.\n5. Для трикотажа берите иглу для джерси с закруглённым кончиком.\n6. Сомневаетесь в выборе? Уточните детали, когда мы позвоним для подтверждения заказа.']
@@ -1414,36 +1553,61 @@ PAGE_MIDDLE = r"""
         }
 
         // ---------- КОРЗИНА ----------
+        function cardOptions(card) {
+            try { return JSON.parse(card.dataset.options || '[]'); } catch (e) { return []; }
+        }
+
         function syncCartWithPage() {
             cart = loadJSON('cart', []).map(i => {
                 if (!i || !Number.isInteger(i.id) || !(i.qty > 0)) return null;
                 const card = document.querySelector('.product-card[data-id="' + i.id + '"]');
                 if (!card) return null;
-                return { id: i.id, name: card.dataset.name, price: parseFloat(card.dataset.price), unit: card.dataset.unit, qty: Math.min(99, i.qty) };
+                const opts = cardOptions(card);
+                let opt = i.opt || '';
+                if (opts.length && !opts.includes(opt)) return null;
+                if (!opts.length) opt = '';
+                return { id: i.id, opt: opt, name: card.dataset.name, price: parseFloat(card.dataset.price), unit: card.dataset.unit, qty: Math.min(99, i.qty) };
             }).filter(Boolean);
         }
 
+        // выбор опции (цвет, размер и т.д.) на карточке товара
+        const selectedOpts = {};
+        function pickOpt(id, btn) {
+            const row = btn.parentNode;
+            row.querySelectorAll('.opt-btn').forEach(b => b.classList.remove('on'));
+            if (selectedOpts[id] === btn.dataset.opt) { delete selectedOpts[id]; return; }
+            selectedOpts[id] = btn.dataset.opt;
+            btn.classList.add('on');
+        }
+
         function addToCart(id, name, price, unit) {
-            let item = cart.find(i => i.id === id);
+            const card = document.querySelector('.product-card[data-id="' + id + '"]');
+            const opts = card ? cardOptions(card) : [];
+            let opt = '';
+            if (opts.length) {
+                opt = selectedOpts[id] || '';
+                if (!opt) { showToast('Сначала выберите опцию: ' + name); return; }
+            }
+            let item = cart.find(i => i.id === id && (i.opt || '') === opt);
             if (item) {
                 if (item.qty < 99) item.qty++;
             } else {
-                cart.push({ id, name, price, unit, qty: 1 });
+                cart.push({ id, opt, name, price, unit, qty: 1 });
             }
             updateCart();
-            showToast('Добавлено в корзину: ' + name);
+            showToast('Добавлено в корзину: ' + name + (opt ? ' (' + opt + ')' : ''));
             const badge = document.getElementById('cartBadge');
             badge.classList.remove('bump');
             void badge.offsetWidth;
             badge.classList.add('bump');
         }
 
-        function changeQty(id, delta) {
-            let item = cart.find(i => i.id === id);
+        function changeQty(idx, delta) {
+            let item = cart[idx];
             if (item) {
                 item.qty = Math.min(99, item.qty + delta);
                 if (item.qty <= 0) {
-                    cart = cart.filter(i => i.id !== id);
+                    cart.splice(idx, 1);
                 }
             }
             updateCart();
@@ -1468,17 +1632,17 @@ PAGE_MIDDLE = r"""
             }
 
             cartItemsDiv.innerHTML = '';
-            cart.forEach(item => {
+            cart.forEach((item, idx) => {
                 cartItemsDiv.innerHTML += `
                     <div class="cart-item">
                         <div>
-                            <div class="cart-item-title">${escapeHtml(item.name)}</div>
+                            <div class="cart-item-title">${escapeHtml(item.name)}${item.opt ? ' <span class="cart-item-opt">· ' + escapeHtml(item.opt) + '</span>' : ''}</div>
                             <div class="cart-item-price">${money(item.price * item.qty)} сом</div>
                         </div>
                         <div class="cart-controls">
-                            <button class="qty-btn" onclick="changeQty(${item.id}, -1)">-</button>
+                            <button class="qty-btn" onclick="changeQty(${idx}, -1)">-</button>
                             <span>${item.qty}</span>
-                            <button class="qty-btn" onclick="changeQty(${item.id}, 1)">+</button>
+                            <button class="qty-btn" onclick="changeQty(${idx}, 1)">+</button>
                         </div>
                     </div>
                 `;
@@ -1515,7 +1679,7 @@ PAGE_MIDDLE = r"""
                 const res = await fetch('/order', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ name, phone, address, items: cart.map(i => ({ id: i.id, qty: i.qty })) })
+                    body: JSON.stringify({ name, phone, address, items: cart.map(i => ({ id: i.id, qty: i.qty, opt: i.opt || '' })) })
                 });
                 const data = await res.json();
                 if (data.ok) {
@@ -1544,6 +1708,18 @@ PAGE_MIDDLE = r"""
     </script>
 </body>
 </html>""".replace("__DELIVERY__", str(DELIVERY_FEE)).replace("__PHONE__", html.escape(SHOP_PHONE))
+
+def parse_options(raw):
+    """Опции товара хранятся в базе как JSON-список строк."""
+    if not raw:
+        return []
+    try:
+        data = json.loads(raw)
+    except Exception:
+        return []
+    if not isinstance(data, list):
+        return []
+    return [str(x).strip() for x in data if str(x).strip()]
 
 def effective_price(price, discount):
     try:
@@ -1580,7 +1756,7 @@ async def handle_website(request):
                 categories = [row[0] for row in cur.fetchall()]
             except: pass
             try:
-                cur.execute("SELECT id, name, unit, price, photo, discount, category FROM products")
+                cur.execute("SELECT id, name, unit, price, photo, discount, category, description, options FROM products")
                 products = cur.fetchall()
             except: pass
     except Exception as e:
@@ -1632,7 +1808,7 @@ async def handle_website(request):
         </select></div>""")
     parts.append('<div class="products-grid" id="productsGrid">')
     if products:
-        for order_no, (p_id, name, unit, price, photo, discount, cat) in enumerate(products):
+        for order_no, (p_id, name, unit, price, photo, discount, cat, description, options_raw) in enumerate(products):
             final_price = effective_price(price, discount)
             has_discount = final_price < round(float(price or 0), 2)
             disc_badge = f'<span class="product-discount">-{esc(discount)}</span>' if (discount and has_discount) else ''
@@ -1641,14 +1817,35 @@ async def handle_website(request):
             img_html = f'<div class="product-img"><img src="/photo/{int(p_id)}" alt="{esc(name)}" loading="lazy" onerror="this.parentNode.style.display=\'none\'"></div>' if photo else ''
             unit_text = unit or "шт"
             price_text = fmt_price(final_price)
+
+            # описание товара (если есть)
+            desc_html = ''
+            if description and str(description).strip():
+                d = str(description).strip()
+                desc_html = f'<div class="product-desc" onclick="showModal({js_str(name)}, {js_str(d)})">{esc(d)}</div>'
+                if len(d) > 110 or d.count("\n") >= 3:
+                    desc_html += f'<span class="desc-more" onclick="showModal({js_str(name)}, {js_str(d)})">Подробнее →</span>'
+
+            # кнопки-опции (если есть)
+            opts = parse_options(options_raw)
+            opts_html = ''
+            if opts:
+                btns = "".join(
+                    f'<button class="opt-btn" data-opt="{esc(o)}" onclick="pickOpt({int(p_id)}, this)">{esc(o)}</button>'
+                    for o in opts
+                )
+                opts_html = f'<div class="opt-label">Выберите опцию:</div><div class="opt-row">{btns}</div>'
+
             parts.append(f"""
-                <div class="product-card" data-id="{int(p_id)}" data-order="{order_no}" data-price="{price_text}" data-name="{esc(name)}" data-unit="{esc(unit_text)}" data-title="{esc(str(name or '').lower())}" data-cat="{esc(cat or '')}">
+                <div class="product-card" data-id="{int(p_id)}" data-order="{order_no}" data-price="{price_text}" data-name="{esc(name)}" data-unit="{esc(unit_text)}" data-title="{esc(str(name or '').lower())}" data-cat="{esc(cat or '')}" data-options="{esc(json.dumps(opts, ensure_ascii=False) if opts else '')}">
                     <button class="fav-btn" data-id="{int(p_id)}" onclick="toggleFav({int(p_id)}, this)" title="В избранное">♡</button>
                     <div>
                         {img_html}
                         {cat_label}
                         <div class="product-title">{esc(name)}</div>
+                        {desc_html}
                         <div class="product-price">{price_text} сом {old_price} {disc_badge}</div>
+                        {opts_html}
                     </div>
                     <button class="add-btn" onclick="addToCart({int(p_id)}, {js_str(name)}, {price_text}, {js_str(unit_text)})">В корзину ({esc(unit_text)})</button>
                 </div>
@@ -1752,14 +1949,22 @@ async def handle_order(request):
             return order_error("Неверные данные заказа.")
         if qty < 1 or qty > 99:
             return order_error("Неверное количество товара.")
-        rows = db_all("SELECT name, unit, price, discount FROM products WHERE id = ?", (pid,))
+        rows = db_all("SELECT name, unit, price, discount, options FROM products WHERE id = ?", (pid,))
         if not rows:
             return order_error("Один из товаров больше недоступен. Обновите страницу.")
-        pname, unit, price, disc = rows[0]
+        pname, unit, price, disc, options_raw = rows[0]
+        opts = parse_options(options_raw)
+        opt = str(entry.get("opt") or "").strip()
+        if opts:
+            if opt not in opts:
+                return order_error(f"Выберите опцию для товара «{pname}».")
+        else:
+            opt = ""
         price = effective_price(price, disc)
         line_total = price * qty
         subtotal += line_total
-        lines.append(f"• {pname} × {qty} {unit or 'шт'} = {fmt_price(line_total)} сом")
+        opt_text = f" ({opt})" if opt else ""
+        lines.append(f"• {pname}{opt_text} × {qty} {unit or 'шт'} = {fmt_price(line_total)} сом")
 
     delivery = DELIVERY_FEE
     total = subtotal + delivery
