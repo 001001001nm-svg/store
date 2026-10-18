@@ -1022,8 +1022,13 @@ PAGE_MIDDLE = r"""
                 <a onclick="showInfo('tips')">Советы швее 🪡</a>
             </div>
             <div class="footer-col">
+             <h4>Наши соц сети</h4>
+                <p>instagram: @shveimag_kyrgyzstan</p>
+            </div>
+        </div>
+        <div class="footer-bottom">  
                 <h4>Контакты</h4>
-                <p>📞 __PHONE__</p>
+                <p>📞 +996 708 393 975</p>
                 <p>📍 Доставка по городу</p>
             </div>
         </div>
