@@ -51,15 +51,17 @@ threading.Thread(target=run_web_server, daemon=True).start()
 # ВАЖНО: ключи больше НЕ хранятся в коде. Задай их в Render -> Environment.
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
 OPENROUTER_KEY = os.environ.get("OPENROUTER_KEY", "")
+GROQ_KEY = os.environ.get("GROQ_API_KEY", "")
+GEMINI_KEY = os.environ.get("GEMINI_API_KEY", "")
+GROQ_MODEL = os.environ.get("GROQ_MODEL", "llama-3.3-70b-versatile")
+GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-2.5-flash")
 UNSPLASH_KEY = os.environ.get("UNSPLASH_ACCESS_KEY", "")
 TAVILY_KEY = os.environ.get("TAVILY_API_KEY", "")
 
 # Модели OpenRouter пробуются по очереди (если одна упала/удалена — берётся следующая).
 # Можно переопределить через переменную окружения OPENROUTER_MODELS (через запятую).
-OPENROUTER_MODELS = [m.strip() for m in os.environ.get(
-    "OPENROUTER_MODELS",
-    "meta-llama/llama-3.3-70b-instruct:free,google/gemini-2.0-flash-exp:free,deepseek/deepseek-chat-v3-0324:free"
-).split(",") if m.strip()]
+OPENROUTER_MODELS_ENV = [m.strip() for m in os.environ.get("OPENROUTER_MODELS", "").split(",") if m.strip()]
+OPENROUTER_MODELS = ["meta-llama/llama-3.3-70b-instruct:free", "deepseek/deepseek-chat-v3-0324:free"]
 
 OWNER_ID = 8762115500
 
@@ -246,7 +248,12 @@ def search_web(query):
         print(f"Ошибка поиска: {e}")
         return ""
 
+COUNTRY_EN = {"Кыргызстан": "Kyrgyzstan", "Турция": "Turkey", "США": "USA", "Китай": "China",
+              "Южная Корея": "South Korea", "Канада": "Canada"}
+
 def fetch_photo_bytes(query):
+    for ru, en in COUNTRY_EN.items():
+        query = query.replace(ru, en)
     if UNSPLASH_KEY:
         try:
             res = requests.get(
@@ -266,14 +273,6 @@ def fetch_photo_bytes(query):
         except Exception as e:
             print(f"Unsplash error: {e}")
 
-    try:
-        fb_res = requests.get(f"https://picsum.photos/800/600?random={random.randint(1, 10000)}", timeout=8)
-        if fb_res.status_code == 200:
-            photo_bytes = io.BytesIO(fb_res.content)
-            photo_bytes.name = "image.jpg"
-            return photo_bytes
-    except Exception as e:
-        print(f"Fallback photo error: {e}")
     return None
 
 def clean_ai_response(text):
@@ -286,33 +285,75 @@ def clean_ai_response(text):
     res = res.replace("*", "")
     return res.strip()
 
+last_ai_error = ""
+_or_cache = {"t": 0, "models": []}
+
+def get_openrouter_models():
+    """Свободные модели OpenRouter берутся динамически (список часто меняется)."""
+    if OPENROUTER_MODELS_ENV:
+        return OPENROUTER_MODELS_ENV
+    import time
+    if _or_cache["models"] and time.time() - _or_cache["t"] < 3600:
+        return _or_cache["models"]
+    models = []
+    try:
+        r = requests.get("https://openrouter.ai/api/v1/models", timeout=10)
+        if r.status_code == 200:
+            free = [m["id"] for m in r.json().get("data", []) if str(m.get("id", "")).endswith(":free")]
+            for kw in ["llama-3.3", "gemini", "deepseek", "qwen", "mistral", "gpt-oss"]:
+                for mid in free:
+                    if kw in mid and mid not in models:
+                        models.append(mid)
+            models = models[:4]
+    except Exception as e:
+        print(f"OpenRouter models list error: {e}")
+    if not models:
+        models = list(OPENROUTER_MODELS)
+    _or_cache["t"] = time.time()
+    _or_cache["models"] = models
+    return models
+
+def _chat_request(url, key, model, messages, max_tokens, extra_headers=None):
+    headers = {"Authorization": f"Bearer {key}", "Content-Type": "application/json"}
+    if extra_headers:
+        headers.update(extra_headers)
+    r = requests.post(url, headers=headers, timeout=25,
+                      json={"model": model, "messages": messages, "max_tokens": max_tokens, "temperature": 0.5})
+    if r.status_code != 200:
+        raise RuntimeError(f"HTTP {r.status_code}: {r.text[:160]}")
+    choices = r.json().get("choices") or []
+    raw = (choices[0].get("message") or {}).get("content") if choices else None
+    if not raw or len(raw.strip()) < 5:
+        raise RuntimeError("пустой ответ")
+    return clean_ai_response(raw)
+
 def ask_ai(messages, max_tokens=900):
-    """Запрос к OpenRouter. Возвращает текст или None, если все модели не ответили."""
-    if not OPENROUTER_KEY or len(OPENROUTER_KEY) < 10:
-        print("OPENROUTER_KEY не задан")
+    """Пробует Groq -> Gemini -> OpenRouter. Возвращает текст или None."""
+    global last_ai_error
+    errors = []
+    attempts = []
+    if GROQ_KEY:
+        attempts.append(("Groq", "https://api.groq.com/openai/v1/chat/completions", GROQ_KEY, GROQ_MODEL, None))
+    if GEMINI_KEY:
+        attempts.append(("Gemini", "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions", GEMINI_KEY, GEMINI_MODEL, None))
+    if OPENROUTER_KEY and len(OPENROUTER_KEY) > 10:
+        for m in get_openrouter_models()[:3]:
+            attempts.append((f"OpenRouter/{m}", "https://openrouter.ai/api/v1/chat/completions", OPENROUTER_KEY, m,
+                             {"HTTP-Referer": "https://render.com", "X-Title": "Barsbek Bot"}))
+    if not attempts:
+        last_ai_error = "не задан ни один ключ ИИ (GROQ_API_KEY / GEMINI_API_KEY / OPENROUTER_KEY)"
+        print(last_ai_error)
         return None
-    headers = {
-        "Authorization": f"Bearer {OPENROUTER_KEY}",
-        "Content-Type": "application/json",
-        "HTTP-Referer": "https://render.com",
-        "X-Title": "Barsbek Bot"
-    }
-    for model in OPENROUTER_MODELS:
-        data = {"model": model, "messages": messages, "max_tokens": max_tokens, "temperature": 0.5}
+    for name, url, key, model, extra in attempts:
         try:
-            response = requests.post("https://openrouter.ai/api/v1/chat/completions",
-                                     headers=headers, json=data, timeout=25)
-            if response.status_code == 200:
-                res_data = response.json()
-                choices = res_data.get("choices") or []
-                if choices:
-                    raw = (choices[0].get("message") or {}).get("content")
-                    if raw and len(raw.strip()) > 10:
-                        return clean_ai_response(raw)
-            else:
-                print(f"OpenRouter {model}: HTTP {response.status_code} {response.text[:200]}")
+            result = _chat_request(url, key, model, messages, max_tokens, extra)
+            last_ai_error = ""
+            return result
         except Exception as e:
-            print(f"OpenRouter {model} error: {e}")
+            msg = f"{name}: {e}"
+            print(msg)
+            errors.append(msg)
+    last_ai_error = " | ".join(errors)[-600:]
     return None
 
 def build_system_prompt(u):
@@ -360,6 +401,12 @@ AI_UNAVAILABLE = {
     "🇬🇧 English": "😔 Barsbek can't reach the AI right now. Please try again in a minute or use the menu buttons.",
     "🇹🇷 Türkçe": "😔 Barsbek şu an yapay zekaya bağlanamıyor. Bir dakika sonra tekrar deneyin veya menü düğmelerini kullanın."
 }
+
+def unavailable_text(user_id, lang):
+    t = AI_UNAVAILABLE.get(lang, AI_UNAVAILABLE["🇷🇺 Русский"])
+    if user_id == OWNER_ID:
+        t += f"\n\n🔧 Для владельца: {last_ai_error or 'причина неизвестна'}"
+    return t
 
 # ==========================================
 # 4.1 ОТПРАВКА СООБЩЕНИЙ (учёт лимитов Telegram)
@@ -608,7 +655,7 @@ def handle_callbacks(call):
             )
             answer = ask_career_ai(u, prompt, use_search=False)
             if not answer:
-                answer = AI_UNAVAILABLE.get(lang, AI_UNAVAILABLE["🇷🇺 Русский"])
+                answer = unavailable_text(user_id, lang)
             try:
                 bot.edit_message_reply_markup(call.message.chat.id, call.message.message_id, reply_markup=None)
             except Exception:
@@ -693,6 +740,15 @@ def start(message):
         u_data["state"] = "WAITING_FOR_LANG"
         msg = "Здравствуйте! 👋 Я Барсбек 🐆 — ваш консультант по образованию и выбору профессии.\n\nВыберите язык / Choose language / Тилди тандаңыз:"
         bot.send_message(message.chat.id, msg, reply_markup=get_language_keyboard())
+
+@bot.message_handler(commands=['aitest'])
+def aitest(message):
+    if message.from_user.id != OWNER_ID:
+        return
+    keys = f"Groq: {'есть' if GROQ_KEY else 'нет'}, Gemini: {'есть' if GEMINI_KEY else 'нет'}, OpenRouter: {'есть' if OPENROUTER_KEY else 'нет'}"
+    typing(message.chat.id)
+    ans = ask_ai([{"role": "user", "content": "Скажи одно слово: привет"}], max_tokens=20)
+    bot.send_message(message.chat.id, f"Ключи -> {keys}\nОтвет ИИ: {ans or 'НЕТ'}\nОшибки: {last_ai_error or '—'}")
 
 @bot.message_handler(content_types=['photo', 'video', 'document', 'voice', 'audio', 'sticker', 'video_note'])
 def handle_non_text(message):
@@ -997,7 +1053,7 @@ def handle_message(message):
     # Любой другой текст — свободный диалог с ИИ-профориентологом
     answer = ask_career_ai(user_data, text)
     if not answer:
-        answer = AI_UNAVAILABLE.get(lang, AI_UNAVAILABLE["🇷🇺 Русский"])
+        answer = unavailable_text(user_id, lang)
     send_long(message.chat.id, answer, get_reels_inline_buttons())
 
 # ==========================================
