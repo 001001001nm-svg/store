@@ -26,7 +26,7 @@ logging.basicConfig(level=logging.INFO)
 #  DB_PATH        - путь к базе (при Persistent Disk, напр. /data/store.db)
 #  SHOP_PHONE     - телефон магазина для футера сайта
 # ============================================================
-BOT_TOKEN = os.environ.get("BOT_TOKEN", "8707470653:AAFbgsPJRqkili4S4fq47aFUVPNlyLCW4Pg")
+BOT_TOKEN = os.environ.get("BOT_TOKEN", "8708493966:AAFfGohPh6jmyuWopT57LQVn-bQ_NNMt_7E")
 SUPER_ADMIN_ID = int(os.environ.get("SUPER_ADMIN_ID", "8636623905"))
 DB_PATH = os.environ.get("DB_PATH", "store.db")
 SHOP_PHONE = os.environ.get("SHOP_PHONE", "+996 700 000 000")
@@ -184,6 +184,9 @@ class CategoryState(StatesGroup):
 class DiscountState(StatesGroup):
     waiting_for_value = State()
 
+class PriceState(StatesGroup):
+    waiting_for_value = State()
+
 class AdState(StatesGroup):
     waiting_for_title = State()
     waiting_for_content = State()
@@ -216,11 +219,41 @@ async def cmd_start(message: types.Message, state: FSMContext):
     else:
         name, is_admin = user_data
         is_owner = (user_id == SUPER_ADMIN_ID)
+        if not is_owner and is_admin != 1:
+            await message.answer("Ожидайте назначения на администратора😇", reply_markup=types.ReplyKeyboardRemove())
+            return
         kb = main_menu_kb(is_owner, is_admin == 1)
         await message.answer(f"Привет, {name}! Добро пожаловать.", reply_markup=kb)
 
+async def notify_owner_new_user(user_id, name, username):
+    """Владельцу приходит уведомление о новом пользователе с кнопкой «Назначить админом»."""
+    uname = username if username == "нет юзернейма" else f"@{username}"
+    kb = types.InlineKeyboardMarkup(inline_keyboard=[[
+        types.InlineKeyboardButton(text="✅ Назначить админом", callback_data=f"mkadm:{user_id}")
+    ]])
+    try:
+        await bot.send_message(
+            SUPER_ADMIN_ID,
+            f"👤 Новый пользователь ждёт назначения:\n{name} ({uname}) — {user_id}",
+            reply_markup=kb
+        )
+    except Exception as e:
+        logging.warning(f"Не удалось уведомить владельца о пользователе {user_id}: {e}")
+
+async def notify_new_admin(uid):
+    """Сообщает пользователю, что его назначили админом. True — если сообщение дошло."""
+    try:
+        await bot.send_message(uid, "Вас назначили на администратора✅", reply_markup=main_menu_kb(False, True))
+        return True
+    except Exception as e:
+        logging.warning(f"Не удалось уведомить нового админа {uid}: {e}")
+        return False
+
 @dp.message(RegState.waiting_for_name)
 async def process_reg_name(message: types.Message, state: FSMContext):
+    if not message.text:
+        await message.answer("Введи своё имя текстом:")
+        return
     user_id = message.from_user.id
     name = message.text.strip()
     username = message.from_user.username or "нет юзернейма"
@@ -230,8 +263,12 @@ async def process_reg_name(message: types.Message, state: FSMContext):
     is_owner = (user_id == SUPER_ADMIN_ID)
     user_data = get_user(user_id)
     is_admin = user_data[1] == 1 if user_data else 0
-    kb = main_menu_kb(is_owner, is_admin)
-    await message.answer(f"Приятно познакомиться, {name}!", reply_markup=kb)
+    if is_owner or is_admin:
+        kb = main_menu_kb(is_owner, is_admin)
+        await message.answer(f"Приятно познакомиться, {name}!", reply_markup=kb)
+        return
+    await message.answer("Ожидайте назначения на администратора😇", reply_markup=types.ReplyKeyboardRemove())
+    await notify_owner_new_user(user_id, name, username)
 
 @dp.message(F.text == "👑 Панель владельца")
 async def owner_panel(message: types.Message, state: FSMContext = None):
@@ -307,7 +344,7 @@ def back_row_kb(extra_rows):
 def products_menu_kb():
     return back_row_kb([
         [types.KeyboardButton(text="➕ Добавить товар"), types.KeyboardButton(text="📋 Список товаров")],
-        [types.KeyboardButton(text="🗑 Убрать все товары")],
+        [types.KeyboardButton(text="💲 Сменить цену"), types.KeyboardButton(text="🗑 Убрать все товары")],
     ])
 
 def products_view():
@@ -370,6 +407,40 @@ async def delete_all_products(call: types.CallbackQuery):
     else:
         await call.answer("Отменено")
         await refresh_inline(call, "Отменено.", None)
+
+@dp.message(F.text == "💲 Сменить цену")
+async def change_price_menu(message: types.Message, state: FSMContext):
+    if not can_manage(message.from_user.id):
+        return
+    await state.clear()
+    rows = db_all("SELECT id, name, price FROM products ORDER BY id")
+    if not rows:
+        await message.answer("Товаров пока нет. Сначала добавь товары.")
+        return
+    chunks = [rows[i:i + 50] for i in range(0, len(rows), 50)]
+    for n, chunk in enumerate(chunks):
+        buttons = [
+            [types.InlineKeyboardButton(text=f"{str(name)[:40]} — {fmt_price(price)} сом", callback_data=f"price:{pid}")]
+            for pid, name, price in chunk
+        ]
+        title = "💲 Выбери товар, чтобы сменить цену:" if n == 0 else "…продолжение списка:"
+        await message.answer(title, reply_markup=types.InlineKeyboardMarkup(inline_keyboard=buttons))
+
+@dp.callback_query(F.data.startswith("price:"))
+async def price_pick(call: types.CallbackQuery, state: FSMContext):
+    if not can_manage(call.from_user.id):
+        await call.answer("Нет доступа", show_alert=True)
+        return
+    pid = int(call.data.split(":")[1])
+    rows = db_all("SELECT name, price FROM products WHERE id = ?", (pid,))
+    if not rows:
+        await call.answer("Товар не найден", show_alert=True)
+        return
+    name, price = rows[0]
+    await state.set_state(PriceState.waiting_for_value)
+    await state.update_data(product_id=pid)
+    await call.answer()
+    await call.message.answer(f"Введи новую цену для «{name}» (сейчас {fmt_price(price)} сом):")
 
 @dp.message(F.text == "➕ Добавить товар")
 async def add_product_start(message: types.Message, state: FSMContext):
@@ -639,7 +710,24 @@ async def add_admin_input(message: types.Message, state: FSMContext):
     else:
         db_run("INSERT OR IGNORE INTO users (user_id, name, username, is_admin) VALUES (?, ?, ?, 1)", (uid, "Админ", "нет юзернейма"))
     await state.clear()
-    await message.answer(f"✅ Пользователь {uid} назначен админом.")
+    delivered = await notify_new_admin(uid)
+    note = "" if delivered else "\n(Не удалось отправить ему уведомление — возможно, он ещё не запускал бота.)"
+    await message.answer(f"✅ Пользователь {uid} назначен админом.{note}")
+
+@dp.callback_query(F.data.startswith("mkadm:"))
+async def approve_admin(call: types.CallbackQuery):
+    if call.from_user.id != SUPER_ADMIN_ID:
+        await call.answer("Нет доступа", show_alert=True)
+        return
+    uid = int(call.data.split(":")[1])
+    if get_user(uid):
+        set_admin_status(uid, 1)
+    else:
+        db_run("INSERT OR IGNORE INTO users (user_id, name, username, is_admin) VALUES (?, ?, ?, 1)", (uid, "Админ", "нет юзернейма"))
+    delivered = await notify_new_admin(uid)
+    await call.answer("Назначен")
+    note = "" if delivered else "\n(Не удалось отправить ему уведомление.)"
+    await refresh_inline(call, f"✅ Пользователь {uid} назначен админом.{note}", None)
 
 @dp.message(F.text == "👥 Список админов")
 async def admins_list(message: types.Message, state: FSMContext):
@@ -785,6 +873,28 @@ async def archive_orders(message: types.Message, state: FSMContext):
     for chunk in archive_chunks(rows):
         await message.answer(chunk)
 
+@dp.message(PriceState.waiting_for_value, F.text)
+async def price_value(message: types.Message, state: FSMContext):
+    data = await state.get_data()
+    try:
+        price = float(message.text.replace(",", ".").replace(" ", ""))
+        if price < 0:
+            raise ValueError
+    except ValueError:
+        await message.answer("Введи цену числом, например 120 или 99.5")
+        return
+    pid = data.get("product_id")
+    rows = db_all("SELECT name FROM products WHERE id = ?", (pid,))
+    await state.clear()
+    if not rows:
+        await message.answer("Этот товар уже удалён.", reply_markup=products_menu_kb())
+        return
+    db_run("UPDATE products SET price = ? WHERE id = ?", (price, pid))
+    await message.answer(
+        f"✅ Цена товара «{rows[0][0]}» изменена на {fmt_price(price)} сом. Она уже на сайте.",
+        reply_markup=products_menu_kb()
+    )
+
 # ============================================================
 #  ВЕБ-СЕРВЕР И САЙТ «ШВЕЙМАГ КЫРГЫЗСТАНА»
 # ============================================================
@@ -806,139 +916,139 @@ PAGE_HEAD = """<!DOCTYPE html>
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Швеймаг</title>
+    <title>Швеймаг Кыргызстана</title>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
     <style>
-        :root { --sky: #8fd3f4; --sky-soft: #eaf7fe; --sky-mid: #cdeafa; --blue: #2f9bdc; --blue-dark: #1b73b3; --navy: #12364d; --coral: #ff7a59; }
+        :root { --leaf: #7fb896; --mint: #ecf5ef; --mint-mid: #cfe5d7; --forest: #20613f; --forest-dark: #14452c; --forest-deep: #0e3a23; --ink: #10291b; --coral: #ff7a59; }
         * { box-sizing: border-box; }
-        body { font-family: 'Inter', sans-serif; background-color: #f3fbff; background-image: radial-gradient(#d9eefa 1.3px, transparent 1.3px); background-size: 22px 22px; margin: 0; padding: 0; color: var(--navy); }
+        body { font-family: 'Inter', sans-serif; background-color: #f2f8f4; background-image: radial-gradient(#dcebe1 1.3px, transparent 1.3px); background-size: 22px 22px; margin: 0; padding: 0; color: var(--ink); }
 
-        header { background: linear-gradient(135deg, #8fd3f4, #b9e5fa); color: var(--navy); padding: 15px 30px; display: flex; justify-content: space-between; align-items: center; box-shadow: 0 4px 14px rgba(27,115,179,0.18); border-bottom: 3px dashed rgba(255,255,255,0.9); position: sticky; top: 0; z-index: 100; }
+        header { background: linear-gradient(135deg, #1b5236, #2a7449); color: #fff; padding: 15px 30px; display: flex; justify-content: space-between; align-items: center; box-shadow: 0 4px 14px rgba(14,58,35,0.35); border-bottom: 3px dashed rgba(255,255,255,0.55); position: sticky; top: 0; z-index: 100; }
         .logo { font-size: 22px; font-weight: 700; display: flex; align-items: center; gap: 10px; }
         .logo .spool { display: inline-block; animation: wobble 3.2s ease-in-out infinite; }
         @keyframes wobble { 0%, 100% { transform: rotate(-12deg); } 50% { transform: rotate(12deg); } }
-        .cart-btn-header { background: #ffffff; color: var(--blue-dark); border: none; padding: 10px 18px; border-radius: 25px; font-weight: 600; cursor: pointer; display: flex; align-items: center; gap: 8px; transition: all 0.2s ease; box-shadow: 0 2px 6px rgba(0,0,0,0.08); }
-        .cart-btn-header:hover { background: var(--sky-soft); transform: translateY(-1px); }
-        .cart-badge { background: var(--blue); color: white; border-radius: 50%; padding: 2px 7px; font-size: 12px; font-weight: 700; display: inline-block; }
+        .cart-btn-header { background: #ffffff; color: var(--forest-dark); border: none; padding: 10px 18px; border-radius: 25px; font-weight: 600; cursor: pointer; display: flex; align-items: center; gap: 8px; transition: all 0.2s ease; box-shadow: 0 2px 6px rgba(0,0,0,0.12); }
+        .cart-btn-header:hover { background: var(--mint); transform: translateY(-1px); }
+        .cart-badge { background: var(--forest); color: white; border-radius: 50%; padding: 2px 7px; font-size: 12px; font-weight: 700; display: inline-block; }
         .cart-badge.bump { animation: bump 0.35s ease; }
         @keyframes bump { 0% { transform: scale(1); } 50% { transform: scale(1.5); } 100% { transform: scale(1); } }
 
-        .search-bar { background: #fff; padding: 15px 20px; display: flex; justify-content: center; border-bottom: 1px solid #d6ecf8; }
-        .search-input { width: 100%; max-width: 600px; padding: 12px 20px; border-radius: 25px; border: 1px solid #bfe0f2; outline: none; font-size: 15px; transition: border 0.2s; }
-        .search-input:focus { border-color: var(--blue); }
+        .search-bar { background: #fff; padding: 15px 20px; display: flex; justify-content: center; border-bottom: 1px solid #d6e8dc; }
+        .search-input { width: 100%; max-width: 600px; padding: 12px 20px; border-radius: 25px; border: 1px solid #bcd8c6; outline: none; font-size: 15px; transition: border 0.2s; }
+        .search-input:focus { border-color: var(--forest); }
 
         .container { max-width: 1200px; margin: 25px auto; padding: 0 20px; }
 
-        /* ГЛАВНЫЙ БЛОК: 3D-ШВЕЙНАЯ МАШИНА + БАННЕРЫ */
+        /* ГЛАВНЫЙ БЛОК: 3D-ИГОЛКА С НИТКАМИ + БАННЕРЫ */
         .hero { display: flex; gap: 20px; align-items: stretch; margin-bottom: 26px; }
         .banners { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 16px; }
-        .banner { position: relative; background: linear-gradient(135deg, #8fd3f4, #c5ebfb); color: var(--navy); border-radius: 20px; padding: 28px 30px; box-shadow: 0 6px 18px rgba(27,115,179,0.2); flex: 1; display: flex; flex-direction: column; justify-content: center; overflow: hidden; }
-        .banner::after { content: ''; position: absolute; inset: 8px; border: 2px dashed rgba(255,255,255,0.9); border-radius: 14px; pointer-events: none; }
+        .banner { position: relative; background: linear-gradient(135deg, #1f5a3a, #2f7d52); color: #fff; border-radius: 20px; padding: 28px 30px; box-shadow: 0 6px 18px rgba(14,58,35,0.3); flex: 1; display: flex; flex-direction: column; justify-content: center; overflow: hidden; }
+        .banner::after { content: ''; position: absolute; inset: 8px; border: 2px dashed rgba(255,255,255,0.6); border-radius: 14px; pointer-events: none; }
         .banner::before { content: '🧵'; position: absolute; right: 22px; top: 10px; font-size: 64px; opacity: 0.22; transform: rotate(15deg); }
         .banner h2 { margin: 0 0 10px 0; font-size: 24px; font-weight: 700; position: relative; }
-        .banner p { margin: 0; font-size: 15px; opacity: 0.92; position: relative; line-height: 1.5; }
+        .banner p { margin: 0; font-size: 15px; opacity: 0.95; position: relative; line-height: 1.5; }
 
-        .stage3d { flex: 0 0 360px; min-height: 330px; position: relative; perspective: 900px; perspective-origin: 50% 38%; border-radius: 20px; background: radial-gradient(circle at 50% 35%, #ffffff 0%, var(--sky-mid) 55%, var(--sky) 100%); box-shadow: 0 6px 18px rgba(27,115,179,0.22); overflow: hidden; cursor: grab; touch-action: pan-y; user-select: none; -webkit-user-select: none; }
+        .stage3d { flex: 0 0 360px; min-height: 330px; position: relative; perspective: 900px; perspective-origin: 50% 40%; border-radius: 20px; background: radial-gradient(circle at 50% 40%, #3f8f63 0%, #1f5a3a 55%, #0e3a23 100%); box-shadow: 0 6px 18px rgba(14,58,35,0.35); overflow: hidden; cursor: grab; touch-action: pan-y; user-select: none; -webkit-user-select: none; }
         .stage3d:active { cursor: grabbing; }
-        .stage3d::after { content: ''; position: absolute; inset: 8px; border: 2px dashed rgba(255,255,255,0.95); border-radius: 14px; pointer-events: none; }
+        .stage3d::after { content: ''; position: absolute; inset: 8px; border: 2px dashed rgba(255,255,255,0.7); border-radius: 14px; pointer-events: none; }
         .m-rot { position: absolute; left: 50%; top: 50%; width: 0; height: 0; transform-style: preserve-3d; }
         .m-grp { position: absolute; left: 0; top: 0; width: 0; height: 0; transform-style: preserve-3d; }
         .m-part { position: absolute; left: 0; top: 0; width: 0; height: 0; transform-style: preserve-3d; }
         .m-face { position: absolute; backface-visibility: hidden; -webkit-backface-visibility: hidden; }
-        .m-needle { animation: stitch 0.5s ease-in-out infinite alternate; }
-        @keyframes stitch { from { transform: translateY(-14px); } to { transform: translateY(8px); } }
-        .m-spin { animation: wheelspin 2s linear infinite; }
-        @keyframes wheelspin { from { transform: rotateX(0deg); } to { transform: rotateX(360deg); } }
-        .m-shadow { position: absolute; left: 50%; bottom: 44px; width: 230px; height: 28px; margin-left: -115px; border-radius: 50%; background: radial-gradient(ellipse, rgba(18,54,77,0.28), rgba(18,54,77,0) 70%); }
-        .stage-hint { position: absolute; left: 0; right: 0; bottom: 18px; text-align: center; font-size: 12px; font-weight: 600; color: var(--blue-dark); z-index: 2; pointer-events: none; }
+        .m-orbit-a { animation: orbit 10s linear infinite; }
+        .m-orbit-b { animation: orbit 14s linear infinite reverse; }
+        @keyframes orbit { from { transform: rotateY(0deg); } to { transform: rotateY(360deg); } }
+        .m-sspin { animation: sspin 1.8s linear infinite; }
+        @keyframes sspin { from { transform: rotateY(0deg); } to { transform: rotateY(360deg); } }
+        .stage-hint { position: absolute; left: 0; right: 0; bottom: 18px; text-align: center; font-size: 12px; font-weight: 600; color: rgba(255,255,255,0.9); z-index: 2; pointer-events: none; }
         .sparkle { position: absolute; font-size: 18px; animation: twinkle 2.8s ease-in-out infinite; pointer-events: none; }
         @keyframes twinkle { 0%, 100% { opacity: 0.25; transform: scale(0.75) rotate(-8deg); } 50% { opacity: 1; transform: scale(1.2) rotate(8deg); } }
         @media (max-width: 700px) { .hero { flex-direction: column; } .stage3d { flex: 0 0 310px; min-height: 310px; } }
-        @media (prefers-reduced-motion: reduce) { .m-needle, .m-spin, .sparkle, .logo .spool { animation: none; } }
+        @media (prefers-reduced-motion: reduce) { .m-orbit-a, .m-orbit-b, .m-sspin, .sparkle, .logo .spool { animation: none; } }
 
         .perks { display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); gap: 14px; margin-bottom: 26px; }
-        .perk { background: #fff; border: 1.5px dashed #9fd2ee; border-radius: 16px; padding: 14px 16px; display: flex; gap: 12px; align-items: center; transition: transform 0.2s, box-shadow 0.2s; }
-        .perk:hover { transform: translateY(-3px); box-shadow: 0 8px 18px rgba(27,115,179,0.15); }
+        .perk { background: #fff; border: 1.5px dashed #9cc7ad; border-radius: 16px; padding: 14px 16px; display: flex; gap: 12px; align-items: center; transition: transform 0.2s, box-shadow 0.2s; }
+        .perk:hover { transform: translateY(-3px); box-shadow: 0 8px 18px rgba(20,69,44,0.15); }
         .perk .ico { font-size: 28px; }
         .perk b { display: block; font-size: 14px; margin-bottom: 2px; }
-        .perk small { color: #5f86a0; font-size: 12px; line-height: 1.3; display: block; }
+        .perk small { color: #5b7f69; font-size: 12px; line-height: 1.3; display: block; }
 
         .categories-container { display: flex; gap: 10px; margin-bottom: 22px; overflow-x: auto; padding-bottom: 8px; scrollbar-width: none; }
-        .cat-pill { background: var(--sky-soft); color: var(--blue-dark); padding: 8px 18px; border-radius: 20px; font-weight: 600; font-size: 14px; white-space: nowrap; border: 1.5px dashed var(--sky); cursor: pointer; transition: all 0.2s; user-select: none; }
-        .cat-pill:hover, .cat-pill.active { background: var(--sky); color: var(--navy); border-style: solid; }
-        .cat-pill.active { box-shadow: 0 2px 8px rgba(47,155,220,0.35); }
+        .cat-pill { background: var(--mint); color: var(--forest-dark); padding: 8px 18px; border-radius: 20px; font-weight: 600; font-size: 14px; white-space: nowrap; border: 1.5px dashed var(--leaf); cursor: pointer; transition: all 0.2s; user-select: none; }
+        .cat-pill:hover, .cat-pill.active { background: var(--leaf); color: var(--ink); border-style: solid; }
+        .cat-pill.active { box-shadow: 0 2px 8px rgba(32,97,63,0.35); }
 
-        .cut-line { display: flex; align-items: center; gap: 10px; color: var(--blue); font-size: 18px; margin: 2px 0 16px; }
-        .cut-line span { flex: 1; border-top: 2px dashed #9fd2ee; }
+        .cut-line { display: flex; align-items: center; gap: 10px; color: var(--forest); font-size: 18px; margin: 2px 0 16px; }
+        .cut-line span { flex: 1; border-top: 2px dashed #9cc7ad; }
 
         .section-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px; gap: 12px; flex-wrap: wrap; }
-        h3 { font-size: 22px; color: var(--navy); margin: 0; font-weight: 700; }
-        .sort-select { padding: 9px 14px; border-radius: 12px; border: 1px solid var(--sky); background: #fff; color: var(--navy); font-size: 14px; font-family: inherit; outline: none; cursor: pointer; }
+        h3 { font-size: 22px; color: var(--ink); margin: 0; font-weight: 700; }
+        .sort-select { padding: 9px 14px; border-radius: 12px; border: 1px solid var(--leaf); background: #fff; color: var(--ink); font-size: 14px; font-family: inherit; outline: none; cursor: pointer; }
         .products-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 22px; margin-bottom: 40px; perspective: 1000px; }
-        .no-results { display: none; text-align: center; color: #5f86a0; margin: -10px 0 40px; }
-        .product-card { position: relative; background: white; border-radius: 18px; padding: 18px; box-shadow: 0 4px 12px rgba(27,115,179,0.08); border: 1px solid #dcedf8; display: flex; flex-direction: column; justify-content: space-between; transition: transform 0.25s, box-shadow 0.25s; transform-style: preserve-3d; }
-        .product-card::before { content: ''; position: absolute; inset: 6px; border: 1.5px dashed #bfe0f2; border-radius: 13px; pointer-events: none; }
-        .product-card:hover { transform: translateY(-6px) rotateX(4deg) rotateY(-4deg); box-shadow: 0 14px 26px rgba(27,115,179,0.24); }
-        .fav-btn { position: absolute; top: 14px; right: 14px; width: 34px; height: 34px; border-radius: 50%; border: none; background: var(--sky-soft); color: var(--blue); font-size: 18px; cursor: pointer; line-height: 1; transition: transform 0.15s; z-index: 2; }
+        .no-results { display: none; text-align: center; color: #5b7f69; margin: -10px 0 40px; }
+        .product-card { position: relative; background: white; border-radius: 18px; padding: 18px; box-shadow: 0 4px 12px rgba(20,69,44,0.08); border: 1px solid #d5e8dc; display: flex; flex-direction: column; justify-content: space-between; transition: transform 0.25s, box-shadow 0.25s; transform-style: preserve-3d; }
+        .product-card::before { content: ''; position: absolute; inset: 6px; border: 1.5px dashed #bcd8c6; border-radius: 13px; pointer-events: none; }
+        .product-card:hover { transform: translateY(-6px) rotateX(4deg) rotateY(-4deg); box-shadow: 0 14px 26px rgba(20,69,44,0.24); }
+        .fav-btn { position: absolute; top: 14px; right: 14px; width: 34px; height: 34px; border-radius: 50%; border: none; background: var(--mint); color: var(--forest); font-size: 18px; cursor: pointer; line-height: 1; transition: transform 0.15s; z-index: 2; }
         .fav-btn:hover { transform: scale(1.15); }
         .fav-btn.on { background: var(--coral); color: white; }
-        .product-img { width: 100%; aspect-ratio: 1 / 1; border-radius: 12px; overflow: hidden; background: var(--sky-soft); margin-bottom: 12px; }
+        .product-img { width: 100%; aspect-ratio: 1 / 1; border-radius: 12px; overflow: hidden; background: var(--mint); margin-bottom: 12px; }
         .product-img img { width: 100%; height: 100%; object-fit: cover; display: block; }
-        .product-cat { font-size: 11px; color: var(--blue-dark); background: var(--sky-soft); padding: 4px 8px; border-radius: 6px; display: inline-block; margin-bottom: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.5px; }
-        .product-title { font-size: 16px; font-weight: 600; margin-bottom: 8px; color: var(--navy); line-height: 1.3; padding-right: 30px; }
-        .product-price { font-size: 20px; color: var(--blue-dark); font-weight: 700; margin-bottom: 15px; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
-        .old-price { font-size: 14px; color: #8aa7b8; font-weight: 500; text-decoration: line-through; }
+        .product-cat { font-size: 11px; color: var(--forest-dark); background: var(--mint); padding: 4px 8px; border-radius: 6px; display: inline-block; margin-bottom: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.5px; }
+        .product-title { font-size: 16px; font-weight: 600; margin-bottom: 8px; color: var(--ink); line-height: 1.3; padding-right: 30px; }
+        .product-price { font-size: 20px; color: var(--forest-dark); font-weight: 700; margin-bottom: 15px; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+        .old-price { font-size: 14px; color: #8aa093; font-weight: 500; text-decoration: line-through; }
         .product-discount { background: var(--coral); color: white; padding: 2px 6px; border-radius: 6px; font-size: 12px; font-weight: 700; }
-        .add-btn { position: relative; z-index: 2; background: var(--blue); color: white; border: none; padding: 10px; border-radius: 10px; cursor: pointer; font-weight: 600; width: 100%; transition: background 0.2s; }
-        .add-btn:hover { background: var(--blue-dark); }
+        .add-btn { position: relative; z-index: 2; background: var(--forest); color: white; border: none; padding: 10px; border-radius: 10px; cursor: pointer; font-weight: 600; width: 100%; transition: background 0.2s; }
+        .add-btn:hover { background: var(--forest-dark); }
 
         /* КОРЗИНА И САЙДБАР */
-        .cart-overlay { position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(18,54,77,0.4); display: none; z-index: 1000; backdrop-filter: blur(2px); }
+        .cart-overlay { position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(16,41,27,0.45); display: none; z-index: 1000; backdrop-filter: blur(2px); }
         .cart-sidebar { position: fixed; top: 0; right: -420px; width: 100%; max-width: 420px; height: 100%; background: white; z-index: 1001; transition: right 0.3s ease; display: flex; flex-direction: column; box-shadow: -6px 0 20px rgba(0,0,0,0.15); }
         .cart-sidebar.open { right: 0; }
         .cart-overlay.open { display: block; }
 
-        .cart-header { padding: 20px; border-bottom: 1px solid #dcedf8; display: flex; justify-content: space-between; align-items: center; background: var(--sky-soft); }
+        .cart-header { padding: 20px; border-bottom: 1px solid #d5e8dc; display: flex; justify-content: space-between; align-items: center; background: var(--mint); }
         .cart-header h3 { margin: 0; font-size: 20px; }
-        .close-cart { background: none; border: none; font-size: 24px; cursor: pointer; color: var(--blue-dark); }
+        .close-cart { background: none; border: none; font-size: 24px; cursor: pointer; color: var(--forest-dark); }
 
         .cart-items { flex: 1; overflow-y: auto; padding: 15px 20px; min-height: 80px; }
-        .cart-item { display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px; padding-bottom: 15px; border-bottom: 1px solid #dcedf8; }
-        .cart-item-title { font-weight: 600; font-size: 14px; margin-bottom: 4px; color: var(--navy); }
-        .cart-item-price { color: var(--blue-dark); font-weight: 700; font-size: 14px; }
+        .cart-item { display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px; padding-bottom: 15px; border-bottom: 1px solid #d5e8dc; }
+        .cart-item-title { font-weight: 600; font-size: 14px; margin-bottom: 4px; color: var(--ink); }
+        .cart-item-price { color: var(--forest-dark); font-weight: 700; font-size: 14px; }
         .cart-controls { display: flex; align-items: center; gap: 8px; }
-        .qty-btn { background: var(--sky-soft); color: var(--blue-dark); border: none; width: 26px; height: 26px; border-radius: 6px; font-weight: bold; cursor: pointer; }
+        .qty-btn { background: var(--mint); color: var(--forest-dark); border: none; width: 26px; height: 26px; border-radius: 6px; font-weight: bold; cursor: pointer; }
 
-        .cart-footer { padding: 20px; border-top: 1px solid #dcedf8; background: #f7fcff; max-height: 70vh; overflow-y: auto; }
-        .cart-summary-line { display: flex; justify-content: space-between; margin-bottom: 8px; font-size: 14px; color: #4f7a93; }
-        .cart-summary-total { display: flex; justify-content: space-between; margin-top: 12px; font-size: 18px; font-weight: 700; color: var(--navy); border-top: 1px solid #d6ecf8; padding-top: 10px; }
-        .form-title { font-size: 13px; font-weight: 700; margin: 14px 0 8px; color: var(--navy); }
-        .form-input { width: 100%; padding: 10px 12px; border: 1px solid #bfe0f2; border-radius: 10px; font-size: 14px; margin-bottom: 8px; outline: none; font-family: inherit; background: white; }
-        .form-input:focus { border-color: var(--blue); }
+        .cart-footer { padding: 20px; border-top: 1px solid #d5e8dc; background: #f6fbf8; max-height: 70vh; overflow-y: auto; }
+        .cart-summary-line { display: flex; justify-content: space-between; margin-bottom: 8px; font-size: 14px; color: #4d7059; }
+        .cart-summary-total { display: flex; justify-content: space-between; margin-top: 12px; font-size: 18px; font-weight: 700; color: var(--ink); border-top: 1px solid #d0e5d8; padding-top: 10px; }
+        .form-title { font-size: 13px; font-weight: 700; margin: 14px 0 8px; color: var(--ink); }
+        .form-input { width: 100%; padding: 10px 12px; border: 1px solid #bcd8c6; border-radius: 10px; font-size: 14px; margin-bottom: 8px; outline: none; font-family: inherit; background: white; }
+        .form-input:focus { border-color: var(--forest); }
         .form-error { color: #d93a5f; font-size: 13px; margin-top: 4px; }
-        .checkout-btn { background: var(--blue); color: white; border: none; width: 100%; padding: 14px; border-radius: 12px; font-weight: 700; font-size: 16px; margin-top: 12px; cursor: pointer; transition: background 0.2s; }
-        .checkout-btn:hover { background: var(--blue-dark); }
+        .checkout-btn { background: var(--forest); color: white; border: none; width: 100%; padding: 14px; border-radius: 12px; font-weight: 700; font-size: 16px; margin-top: 12px; cursor: pointer; transition: background 0.2s; }
+        .checkout-btn:hover { background: var(--forest-dark); }
         .checkout-btn:disabled { opacity: 0.6; cursor: wait; }
 
         /* ОКНО С ИНФОРМАЦИЕЙ */
-        .modal-overlay { position: fixed; inset: 0; background: rgba(18,54,77,0.5); display: none; align-items: center; justify-content: center; z-index: 2000; padding: 20px; }
+        .modal-overlay { position: fixed; inset: 0; background: rgba(16,41,27,0.55); display: none; align-items: center; justify-content: center; z-index: 2000; padding: 20px; }
         .modal-overlay.open { display: flex; }
-        .modal { background: white; color: var(--navy); max-width: 540px; width: 100%; border-radius: 18px; padding: 26px; max-height: 85vh; overflow-y: auto; box-shadow: 0 20px 40px rgba(0,0,0,0.25); border-top: 6px solid var(--sky); }
+        .modal { background: white; color: var(--ink); max-width: 540px; width: 100%; border-radius: 18px; padding: 26px; max-height: 85vh; overflow-y: auto; box-shadow: 0 20px 40px rgba(0,0,0,0.25); border-top: 6px solid var(--forest); }
         .modal h3 { margin: 0 0 14px 0; }
-        .modal p { line-height: 1.65; font-size: 15px; color: #3f6a84; white-space: pre-line; margin: 0 0 18px 0; }
-        .modal button { background: var(--blue); color: white; border: none; padding: 10px 22px; border-radius: 10px; font-weight: 600; cursor: pointer; }
+        .modal p { line-height: 1.65; font-size: 15px; color: #3d6149; white-space: pre-line; margin: 0 0 18px 0; }
+        .modal button { background: var(--forest); color: white; border: none; padding: 10px 22px; border-radius: 10px; font-weight: 600; cursor: pointer; }
 
-        .toast { position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%) translateY(20px); background: var(--navy); color: white; padding: 12px 20px; border-radius: 14px; font-size: 14px; opacity: 0; transition: all 0.3s; z-index: 3000; pointer-events: none; max-width: 90%; text-align: center; }
+        .toast { position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%) translateY(20px); background: var(--ink); color: white; padding: 12px 20px; border-radius: 14px; font-size: 14px; opacity: 0; transition: all 0.3s; z-index: 3000; pointer-events: none; max-width: 90%; text-align: center; }
         .toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
 
-        footer { background: linear-gradient(135deg, #8fd3f4, #b9e5fa); color: var(--navy); padding: 40px 20px; margin-top: 60px; border-top: 3px dashed rgba(255,255,255,0.9); }
+        footer { background: linear-gradient(135deg, #14452c, #1f5a3a); color: #fff; padding: 40px 20px; margin-top: 60px; border-top: 3px dashed rgba(255,255,255,0.55); }
         .footer-content { max-width: 1200px; margin: 0 auto; display: flex; justify-content: space-between; flex-wrap: wrap; gap: 30px; }
         .footer-col { max-width: 360px; }
         .footer-col h4 { margin-top: 0; margin-bottom: 15px; font-size: 16px; font-weight: 700; }
-        .footer-col p, .footer-col a { font-size: 14px; color: var(--navy); text-decoration: none; display: block; margin-bottom: 8px; line-height: 1.5; }
+        .footer-col p, .footer-col a { font-size: 14px; color: #fff; text-decoration: none; display: block; margin-bottom: 8px; line-height: 1.5; }
         .footer-col a { cursor: pointer; }
         .footer-col a:hover { text-decoration: underline; }
-        .footer-bottom { text-align: center; margin-top: 30px; font-size: 13px; opacity: 0.85; border-top: 1px solid rgba(18,54,77,0.2); padding-top: 15px; }
+        .footer-bottom { text-align: center; margin-top: 30px; font-size: 13px; opacity: 0.85; border-top: 1px solid rgba(255,255,255,0.25); padding-top: 15px; }
     </style>
 </head>
 <body>
@@ -970,7 +1080,7 @@ PAGE_MIDDLE = r"""
         </div>
 
         <div class="cart-items" id="cartItems">
-            <p style="text-align: center; color: #8fb1c4; margin-top: 40px;">Корзина пуста</p>
+            <p style="text-align: center; color: #8fae9b; margin-top: 40px;">Корзина пуста</p>
         </div>
 
         <div class="cart-footer">
@@ -1095,7 +1205,7 @@ PAGE_MIDDLE = r"""
             return '+996' + nine;
         }
 
-        // ---------- 3D-ШВЕЙНАЯ МАШИНА (собрана из CSS-граней) ----------
+        // ---------- 3D-ИГОЛКА С КРУТЯЩИМИСЯ НИТКАМИ (собрана из CSS-граней) ----------
         const hsl = (c, dl) => `hsl(${c[0]}, ${c[1]}%, ${Math.max(5, Math.min(97, c[2] + dl))}%)`;
 
         function mkFace(w, h, tf, bg, round) {
@@ -1122,9 +1232,9 @@ PAGE_MIDDLE = r"""
             ].forEach(f => p.appendChild(mkFace(f[0], f[1], f[2], hsl(c, f[3]))));
             return p;
         }
-        // вертикальный цилиндр (катушка)
-        function mkCylY(r, h, x, y, z, c) {
-            const N = 22;
+        // вертикальный цилиндр (катушка, стержень иглы)
+        function mkCylY(r, h, x, y, z, c, N) {
+            N = N || 22;
             const p = mkPart(x, y, z);
             const w = Math.ceil(2 * Math.PI * r / N) + 1;
             for (let i = 0; i < N; i++) {
@@ -1136,81 +1246,87 @@ PAGE_MIDDLE = r"""
             p.appendChild(mkFace(2 * r, 2 * r, `rotateX(-90deg) translateZ(${h / 2}px)`, hsl(c, -16), true));
             return p;
         }
-        // цилиндр вдоль оси X (маховик)
-        function mkCylX(r, t, c, markColor) {
-            const N = 26;
-            const g = document.createElement('div');
-            g.className = 'm-grp';
-            const chord = Math.ceil(2 * Math.PI * r / N) + 1;
-            for (let i = 0; i < N; i++) {
-                const a = i * 360 / N;
-                const light = 12 * Math.cos((a - 30) * Math.PI / 180) - 3;
-                g.appendChild(mkFace(t, chord, `rotateX(${a}deg) translateZ(${r}px)`, i === 0 ? markColor : hsl(c, light)));
-            }
-            g.appendChild(mkFace(2 * r, 2 * r, `rotateY(90deg) translateZ(${t / 2}px)`, hsl(c, 8), true));
-            g.appendChild(mkFace(2 * r, 2 * r, `rotateY(-90deg) translateZ(${t / 2}px)`, hsl(c, -8), true));
-            g.appendChild(mkFace(2 * r * 0.45, 2 * r * 0.45, `rotateY(90deg) translateZ(${t / 2 + 0.5}px)`, markColor, true));
-            g.appendChild(mkFace(2 * r * 0.45, 2 * r * 0.45, `rotateY(-90deg) translateZ(${t / 2 + 0.5}px)`, markColor, true));
-            return g;
+        // катушка ниток: наклонена и крутится вокруг своей оси
+        function mkSpool(c, wood, tilt, delay) {
+            const tiltG = document.createElement('div');
+            tiltG.className = 'm-grp';
+            tiltG.style.transform = `rotateZ(${tilt}deg)`;
+            const sp = document.createElement('div');
+            sp.className = 'm-grp m-sspin';
+            sp.style.animationDelay = delay + 's';
+            sp.appendChild(mkCylY(11, 24, 0, 0, 0, c));
+            sp.appendChild(mkCylY(14, 3, 0, -13.5, 0, wood));
+            sp.appendChild(mkCylY(14, 3, 0, 13.5, 0, wood));
+            tiltG.appendChild(sp);
+            return tiltG;
+        }
+        // группа катушек, летающих по кругу вокруг иглы
+        function mkOrbit(cls, items) {
+            const o = document.createElement('div');
+            o.className = 'm-grp ' + cls;
+            items.forEach(it => {
+                const p = mkPart(it[0], it[1], it[2]);
+                p.appendChild(it[3]);
+                o.appendChild(p);
+            });
+            return o;
         }
 
-        function buildMachine() {
-            const stage = document.getElementById('machine3d');
+        function buildNeedle() {
+            const stage = document.getElementById('needle3d');
             if (!stage) return;
 
-            const WHITE = [205, 35, 95], BLUE = [203, 78, 52], BASE = [205, 62, 58], NAVY = [208, 45, 24];
-            const STEEL = [210, 10, 72], GOLD = [43, 88, 58], CORAL = [10, 85, 60], WOOD = [35, 48, 72], FABRIC = [345, 72, 86];
+            const STEEL = [210, 14, 76], DARK = [210, 20, 18], CORAL = [10, 85, 60], GOLD = [43, 88, 58];
+            const CREAM = [45, 55, 90], SKYB = [200, 75, 68], WOOD = [35, 48, 72];
 
             const rot = document.createElement('div');
             rot.className = 'm-rot';
             const root = document.createElement('div');
             root.className = 'm-grp';
-            root.style.transform = 'translate3d(-7px, 22px, 0)';
+            root.style.transform = 'rotateZ(18deg) translate3d(0, -10px, 0)';
             rot.appendChild(root);
 
-            // основание, ткань, стойка, рукав
-            root.appendChild(mkBox(232, 14, 86, 0, 70, 0, BASE));
-            root.appendChild(mkBox(84, 3, 60, -78, 61.5, 4, FABRIC));
-            root.appendChild(mkBox(46, 120, 58, 78, 3, 0, WHITE));
-            root.appendChild(mkBox(214, 36, 58, 0, -75, 0, WHITE));
-            // голубые полосы-отделка на рукаве
-            root.appendChild(mkBox(160, 5, 1, -10, -75, 29.5, BLUE));
-            root.appendChild(mkBox(160, 5, 1, -10, -75, -29.5, BLUE));
-            // головка с иглой
-            root.appendChild(mkBox(30, 50, 46, -92, -32, 0, WHITE));
-            root.appendChild(mkBox(30, 6, 46, -92, -6, 0, BLUE));
-            // прижимная лапка (неподвижная)
-            root.appendChild(mkBox(4, 62, 4, -99, 24, 0, STEEL));
-            root.appendChild(mkBox(20, 5, 16, -92, 57.5, 0, STEEL));
-            // игла — ходит вверх-вниз
-            const needle = document.createElement('div');
-            needle.className = 'm-grp m-needle';
-            needle.appendChild(mkBox(8, 12, 8, -92, -3, 0, GOLD));
-            needle.appendChild(mkBox(2.5, 58, 2.5, -92, 22, 0, STEEL));
-            root.appendChild(needle);
-            // катушка с ниткой на штыре
-            root.appendChild(mkBox(4, 14, 4, 35, -100, 0, STEEL));
-            root.appendChild(mkCylY(13, 26, 35, -110, 0, CORAL));
-            root.appendChild(mkCylY(16, 3, 35, -124.5, 0, WOOD));
-            root.appendChild(mkCylY(16, 3, 35, -96.5, 0, WOOD));
-            // нитка к игле
-            root.appendChild(mkBox(3, 8, 3, -86, -97, 0, STEEL));
-            root.appendChild(mkBox(120, 1.6, 1.6, -25, -95.5, 2, CORAL));
-            // ручки на стойке
-            root.appendChild(mkBox(10, 10, 6, 78, -32, 32, GOLD));
-            root.appendChild(mkBox(10, 10, 6, 78, -8, 32, BLUE));
-            // маховик — вращается
-            const wheelPos = mkPart(114, -75, 0);
-            const spin = document.createElement('div');
-            spin.className = 'm-grp m-spin';
-            spin.appendChild(mkCylX(26, 14, NAVY, hsl(CORAL, 0)));
-            spin.appendChild(mkBox(6, 6, 6, 10, -14, 0, GOLD));
-            wheelPos.appendChild(spin);
-            root.appendChild(wheelPos);
+            // головка иглы с ушком
+            root.appendChild(mkBox(9, 36, 3, 0, -84, 0, STEEL));
+            const eye = mkPart(0, -92, 0);
+            eye.appendChild(mkFace(4, 18, 'translateZ(1.8px)', hsl(DARK, 0), true));
+            eye.appendChild(mkFace(4, 18, 'rotateY(180deg) translateZ(1.8px)', hsl(DARK, 0), true));
+            root.appendChild(eye);
+            // нитка, продетая в ушко
+            root.appendChild(mkBox(2.4, 40, 6, 0, -88, 0, CORAL));
 
-            const shadow = document.createElement('div');
-            shadow.className = 'm-shadow';
-            stage.appendChild(shadow);
+            // стержень иглы (сужается к острию)
+            [[3.4, 60, -36], [3, 50, 19], [2.2, 40, 64], [1.4, 22, 95], [0.7, 16, 114]].forEach(s => {
+                root.appendChild(mkCylY(s[0], s[1], 0, s[2], 0, STEEL, 14));
+            });
+
+            // две нитки, обмотанные спиралью вокруг иглы
+            const shaftR = y => y < -6 ? 3.4 : (y < 44 ? 3 : (y < 84 ? 2.2 : 1.4));
+            [[CORAL, 0], [GOLD, 180]].forEach(pair => {
+                for (let i = 0; i < 27; i++) {
+                    const ym = -62 + i * 5.4 + 2.7;
+                    const r = shaftR(ym) + 2.4;
+                    const phi = pair[1] + i * 38 + 19;
+                    const rad = phi * Math.PI / 180;
+                    const chord = 2 * r * Math.sin(19 * Math.PI / 180);
+                    const len = Math.sqrt(chord * chord + 5.4 * 5.4);
+                    const slope = Math.atan2(5.4, chord) * 180 / Math.PI;
+                    const b = mkBox(len + 0.6, 2.4, 2.4, 0, 0, 0, pair[0]);
+                    b.style.transform = `translate3d(${(r * Math.cos(rad)).toFixed(2)}px, ${ym.toFixed(2)}px, ${(r * Math.sin(rad)).toFixed(2)}px) rotateY(${-(phi + 90)}deg) rotateZ(${slope.toFixed(1)}deg)`;
+                    root.appendChild(b);
+                }
+            });
+
+            // катушки ниток кружат вокруг иглы и крутятся сами
+            root.appendChild(mkOrbit('m-orbit-a', [
+                [95, -30, 0, mkSpool(CORAL, WOOD, 20, 0)],
+                [-95, -30, 0, mkSpool(CREAM, WOOD, -20, 0.4)]
+            ]));
+            root.appendChild(mkOrbit('m-orbit-b', [
+                [0, 55, 72, mkSpool(GOLD, WOOD, -15, 0.2)],
+                [0, 55, -72, mkSpool(SKYB, WOOD, 15, 0.6)]
+            ]));
+
             stage.appendChild(rot);
 
             [['10%', '12%', '0s', '🧵'], ['82%', '16%', '0.9s', '🪡'], ['9%', '66%', '1.6s', '✂️'], ['84%', '60%', '0.4s', '✨']].forEach(([l, t, d, e]) => {
@@ -1222,14 +1338,14 @@ PAGE_MIDDLE = r"""
             });
             const hint = document.createElement('div');
             hint.className = 'stage-hint';
-            hint.innerText = '👆 Потяните, чтобы покрутить машинку';
+            hint.innerText = '👆 Потяните, чтобы покрутить иголку';
             stage.appendChild(hint);
 
             // автоповорот + вращение мышкой/пальцем
-            let angle = -28, tilt = -14, dragging = false, lx = 0, ly = 0;
+            let angle = -28, tilt = -12, dragging = false, lx = 0, ly = 0;
             const reduce = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
             const apply = () => { rot.style.transform = `rotateX(${tilt}deg) rotateY(${angle}deg)`; };
-            const tick = () => { if (!dragging && !reduce) angle += 0.22; apply(); requestAnimationFrame(tick); };
+            const tick = () => { if (!dragging && !reduce) angle += 0.3; apply(); requestAnimationFrame(tick); };
             apply();
             requestAnimationFrame(tick);
             stage.addEventListener('pointerdown', e => {
@@ -1347,7 +1463,7 @@ PAGE_MIDDLE = r"""
             document.getElementById('totalPrice').innerText = money(subtotal + deliveryFee) + ' сом';
 
             if (cart.length === 0) {
-                cartItemsDiv.innerHTML = '<p style="text-align: center; color: #8fb1c4; margin-top: 40px;">Корзина пуста</p>';
+                cartItemsDiv.innerHTML = '<p style="text-align: center; color: #8fae9b; margin-top: 40px;">Корзина пуста</p>';
                 return;
             }
 
@@ -1420,7 +1536,7 @@ PAGE_MIDDLE = r"""
             }
         }
 
-        buildMachine();
+        buildNeedle();
         initFavs();
         syncCartWithPage();
         updateCart();
@@ -1472,8 +1588,8 @@ async def handle_website(request):
 
     parts = [PAGE_HEAD]
 
-    # 3D-швейная машина слева + баннеры справа
-    parts.append('<div class="hero"><div class="stage3d" id="machine3d"></div><div class="banners">')
+    # 3D-иголка с нитками слева + баннеры справа
+    parts.append('<div class="hero"><div class="stage3d" id="needle3d"></div><div class="banners">')
     if ads:
         for title, content in ads:
             parts.append(f"""
@@ -1538,7 +1654,7 @@ async def handle_website(request):
                 </div>
             """)
     else:
-        parts.append('<p style="grid-column: 1/-1; text-align: center; color: #5f86a0;">В магазине пока нет товаров. Добавьте их через Telegram-бота.</p>')
+        parts.append('<p style="grid-column: 1/-1; text-align: center; color: #5b7f69;">В магазине пока нет товаров. Добавьте их через Telegram-бота.</p>')
 
     parts.append(PAGE_MIDDLE)
 
