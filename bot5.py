@@ -183,7 +183,6 @@ class ProductState(StatesGroup):
     waiting_for_price = State()
     waiting_for_stock = State()
     waiting_for_description = State()
-    waiting_for_options = State()
     waiting_for_photo = State()
 
 class CategoryState(StatesGroup):
@@ -608,10 +607,9 @@ async def add_product_stock_wrong(message: types.Message):
 async def add_product_description(message: types.Message, state: FSMContext):
     text = message.text.strip()
     await state.update_data(description="" if text == "Пропустить" else text[:1000])
-    await state.set_state(ProductState.waiting_for_options)
+    await state.set_state(ProductState.waiting_for_photo)
     await message.answer(
-        "Введи опции товара через запятую (например: Красный, Синий, Белый или S, M, L). "
-        "Покупатель выберет одну из них кнопкой на сайте.\nЕсли опций нет — нажми «Пропустить»:",
+        "Отправь фото товара или нажми «Пропустить»:",
         reply_markup=back_row_kb([[types.KeyboardButton(text="Пропустить")]])
     )
 
@@ -619,36 +617,12 @@ async def add_product_description(message: types.Message, state: FSMContext):
 async def add_product_description_wrong(message: types.Message):
     await message.answer("Отправь описание текстом или нажми «Пропустить».")
 
-@dp.message(ProductState.waiting_for_options, F.text)
-async def add_product_options(message: types.Message, state: FSMContext):
-    text = message.text.strip()
-    options = []
-    if text != "Пропустить":
-        for part in re.split(r"[,;\n]+", text):
-            part = part.strip()[:30]
-            if part and part not in options:
-                options.append(part)
-        options = options[:12]
-        if not options:
-            await message.answer("Не получилось разобрать опции. Введи их через запятую или нажми «Пропустить».")
-            return
-    await state.update_data(options=json.dumps(options, ensure_ascii=False) if options else "")
-    await state.set_state(ProductState.waiting_for_photo)
-    await message.answer(
-        "Отправь фото товара или нажми «Пропустить»:",
-        reply_markup=back_row_kb([[types.KeyboardButton(text="Пропустить")]])
-    )
-
-@dp.message(ProductState.waiting_for_options)
-async def add_product_options_wrong(message: types.Message):
-    await message.answer("Отправь опции текстом через запятую или нажми «Пропустить».")
-
 async def save_product(message: types.Message, state: FSMContext, photo):
     data = await state.get_data()
     db_run(
         "INSERT INTO products (name, unit, price, photo, discount, category, description, options, stock) VALUES (?, ?, ?, ?, NULL, ?, ?, ?, ?)",
         (data.get("name"), data.get("unit"), data.get("price"), photo, data.get("category", ""),
-         data.get("description") or None, data.get("options") or None, data.get("stock"))
+         data.get("description") or None, None, data.get("stock"))
     )
     await state.clear()
     await message.answer(
@@ -902,7 +876,7 @@ async def delete_admin(call: types.CallbackQuery):
 # ============================================================
 #  🛒 ЗАКАЗЫ (приходят с сайта, управление через бота)
 # ============================================================
-DELIVERY_FEE = 150
+DELIVERY_FEE = 0  # доставка и установка бесплатно
 LOCAL_TZ = timezone(timedelta(hours=6))
 
 def now_local():
@@ -918,7 +892,7 @@ def order_text(row):
         f"🛒 Заказ №{oid}\n🕒 {dt}\n\n"
         f"👤 {name}\n📞 {phone}\n📍 {address}\n\n"
         f"{items}\n\n"
-        f"Доставка: {fmt_price(delivery)} сом\n"
+        "🚚 Доставка и установка: бесплатно\n"
         f"💰 Итого: {fmt_price(total)} сом"
     )
 
@@ -1141,6 +1115,14 @@ PAGE_HEAD = """<!DOCTYPE html>
         .opt-btn.on { background: var(--forest); border-color: var(--forest); color: #fff; }
         .cart-item-opt { font-weight: 500; color: #5b7f69; }
 
+        .free-banner { position: relative; display: flex; align-items: center; justify-content: center; gap: 18px; background: linear-gradient(135deg, #ff7a59, #ffa24c); color: #fff; border-radius: 20px; padding: 20px 26px; margin-bottom: 26px; box-shadow: 0 8px 20px rgba(255,122,89,0.35); text-align: center; overflow: hidden; }
+        .free-banner::after { content: ''; position: absolute; inset: 7px; border: 2px dashed rgba(255,255,255,0.75); border-radius: 14px; pointer-events: none; }
+        .free-banner b { display: block; font-size: 22px; font-weight: 700; margin-bottom: 4px; }
+        .free-banner span { font-size: 14px; opacity: 0.96; }
+        .free-banner .fb-ico { font-size: 38px; animation: wobble 3.2s ease-in-out infinite; }
+        @media (max-width: 700px) { .free-banner { padding: 16px 14px; gap: 10px; } .free-banner b { font-size: 17px; } .free-banner .fb-ico { font-size: 28px; } }
+        .free-tag { color: var(--forest); font-weight: 700; }
+
         /* КОРЗИНА И САЙДБАР */
         .cart-overlay { position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(16,41,27,0.45); display: none; z-index: 1000; backdrop-filter: blur(2px); }
         .cart-sidebar { position: fixed; top: 0; right: -420px; width: 100%; max-width: 420px; height: 100%; background: white; z-index: 1001; transition: right 0.3s ease; display: flex; flex-direction: column; box-shadow: -6px 0 20px rgba(0,0,0,0.15); }
@@ -1228,8 +1210,8 @@ PAGE_MIDDLE = r"""
                 <span id="subtotalPrice">0 сом</span>
             </div>
             <div class="cart-summary-line">
-                <span>Доставка:</span>
-                <span id="deliveryPrice">0 сом</span>
+                <span>Доставка и установка:</span>
+                <span class="free-tag">Бесплатно 🎁</span>
             </div>
             <div class="cart-summary-total">
                 <span>Итого:</span>
@@ -1273,7 +1255,7 @@ PAGE_MIDDLE = r"""
             <div class="footer-col">
                 <h4>Контакты</h4>
                 <p>📞 __PHONE__</p>
-                <p>📍 Доставка по городу</p>
+                <p>🚚 Доставка и установка бесплатно</p>
             </div>
         </div>
         <div class="footer-bottom">
@@ -1297,7 +1279,7 @@ PAGE_MIDDLE = r"""
         const INFO = {
             about: ['О нас', 'Швеймаг Kg — интернет-магазин товаров для шитья и рукоделия. Здесь есть всё, без чего не обойтись ни опытной швее, ни тому, кто только берёт в руки иголку: нитки, иглы, фурнитура, инструменты и многое другое.\n\nМы хотим, чтобы за нужной мелочью — катушкой подходящего оттенка, молнией или запасной иглой — не приходилось ездить по всему городу. Выбирайте товары на сайте, оформляйте заказ, а остальное мы берём на себя. Ассортимент постоянно пополняется.'],
             order: ['Как сделать заказ', '1. Найдите нужный товар через поиск или выберите каталог.\n2. Нажмите «В корзину» на карточке товара. Понравившееся можно отметить сердечком ♡.\n3. Откройте корзину, проверьте количество и укажите имя, номер телефона и адрес доставки.\n4. Нажмите «Оформить заказ» — мы получим его сразу и свяжемся с вами для подтверждения.'],
-            delivery: ['Доставка и оплата', `Мы доставляем заказы по городу прямо к двери. Стоимость доставки — ${DELIVERY_FEE} сом.\n\nОплата производится при получении заказа. Номер телефона нужен, чтобы курьер мог с вами связаться, поэтому указывайте действующий номер.`],
+            delivery: ['Доставка и оплата', `Доставка и установка у нас бесплатные: привезём заказ прямо к двери, вы платите только за сам товар.\n\nОплата производится при получении заказа. Номер телефона нужен, чтобы курьер мог с вами связаться, поэтому указывайте действующий номер.`],
             tips: ['Советы швее 🪡', '1. Подбирайте иглу под ткань: тонкие номера (60–70) — для шёлка и тонкого хлопка, средние (80–90) — для обычных тканей, толстые (100–110) — для джинсы и плотных материалов.\n2. Нитки лучше брать на тон темнее ткани: на самой ткани стежки выглядят светлее, чем на катушке.\n3. Перед раскроем постирайте и прогладьте ткань, чтобы готовое изделие потом не село.\n4. Меняйте иглу примерно через 6–8 часов шитья или если она задела булавку: тупая игла портит ткань и пропускает стежки.\n5. Для трикотажа берите иглу для джерси с закруглённым кончиком.\n6. Сомневаетесь в выборе? Уточните детали, когда мы позвоним для подтверждения заказа.']
         };
 
@@ -1553,49 +1535,27 @@ PAGE_MIDDLE = r"""
         }
 
         // ---------- КОРЗИНА ----------
-        function cardOptions(card) {
-            try { return JSON.parse(card.dataset.options || '[]'); } catch (e) { return []; }
-        }
-
         function syncCartWithPage() {
-            cart = loadJSON('cart', []).map(i => {
-                if (!i || !Number.isInteger(i.id) || !(i.qty > 0)) return null;
+            const merged = {};
+            loadJSON('cart', []).forEach(i => {
+                if (!i || !Number.isInteger(i.id) || !(i.qty > 0)) return;
                 const card = document.querySelector('.product-card[data-id="' + i.id + '"]');
-                if (!card) return null;
-                const opts = cardOptions(card);
-                let opt = i.opt || '';
-                if (opts.length && !opts.includes(opt)) return null;
-                if (!opts.length) opt = '';
-                return { id: i.id, opt: opt, name: card.dataset.name, price: parseFloat(card.dataset.price), unit: card.dataset.unit, qty: Math.min(99, i.qty) };
-            }).filter(Boolean);
-        }
-
-        // выбор опции (цвет, размер и т.д.) на карточке товара
-        const selectedOpts = {};
-        function pickOpt(id, btn) {
-            const row = btn.parentNode;
-            row.querySelectorAll('.opt-btn').forEach(b => b.classList.remove('on'));
-            if (selectedOpts[id] === btn.dataset.opt) { delete selectedOpts[id]; return; }
-            selectedOpts[id] = btn.dataset.opt;
-            btn.classList.add('on');
+                if (!card) return;
+                if (merged[i.id]) { merged[i.id].qty = Math.min(99, merged[i.id].qty + i.qty); return; }
+                merged[i.id] = { id: i.id, name: card.dataset.name, price: parseFloat(card.dataset.price), unit: card.dataset.unit, qty: Math.min(99, i.qty) };
+            });
+            cart = Object.values(merged);
         }
 
         function addToCart(id, name, price, unit) {
-            const card = document.querySelector('.product-card[data-id="' + id + '"]');
-            const opts = card ? cardOptions(card) : [];
-            let opt = '';
-            if (opts.length) {
-                opt = selectedOpts[id] || '';
-                if (!opt) { showToast('Сначала выберите опцию: ' + name); return; }
-            }
-            let item = cart.find(i => i.id === id && (i.opt || '') === opt);
+            let item = cart.find(i => i.id === id);
             if (item) {
                 if (item.qty < 99) item.qty++;
             } else {
-                cart.push({ id, opt, name, price, unit, qty: 1 });
+                cart.push({ id, name, price, unit, qty: 1 });
             }
             updateCart();
-            showToast('Добавлено в корзину: ' + name + (opt ? ' (' + opt + ')' : ''));
+            showToast('Добавлено в корзину: ' + name);
             const badge = document.getElementById('cartBadge');
             badge.classList.remove('bump');
             void badge.offsetWidth;
@@ -1618,13 +1578,11 @@ PAGE_MIDDLE = r"""
             let badge = document.getElementById('cartBadge');
             let totalQty = cart.reduce((sum, item) => sum + item.qty, 0);
             let subtotal = money(cart.reduce((sum, item) => sum + (item.price * item.qty), 0));
-            let deliveryFee = subtotal === 0 ? 0 : DELIVERY_FEE;
 
             saveJSON('cart', cart);
             badge.innerText = totalQty;
             document.getElementById('subtotalPrice').innerText = subtotal + ' сом';
-            document.getElementById('deliveryPrice').innerText = deliveryFee + ' сом';
-            document.getElementById('totalPrice').innerText = money(subtotal + deliveryFee) + ' сом';
+            document.getElementById('totalPrice').innerText = subtotal + ' сом';
 
             if (cart.length === 0) {
                 cartItemsDiv.innerHTML = '<p style="text-align: center; color: #8fae9b; margin-top: 40px;">Корзина пуста</p>';
@@ -1636,7 +1594,7 @@ PAGE_MIDDLE = r"""
                 cartItemsDiv.innerHTML += `
                     <div class="cart-item">
                         <div>
-                            <div class="cart-item-title">${escapeHtml(item.name)}${item.opt ? ' <span class="cart-item-opt">· ' + escapeHtml(item.opt) + '</span>' : ''}</div>
+                            <div class="cart-item-title">${escapeHtml(item.name)}</div>
                             <div class="cart-item-price">${money(item.price * item.qty)} сом</div>
                         </div>
                         <div class="cart-controls">
@@ -1679,7 +1637,7 @@ PAGE_MIDDLE = r"""
                 const res = await fetch('/order', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ name, phone, address, items: cart.map(i => ({ id: i.id, qty: i.qty, opt: i.opt || '' })) })
+                    body: JSON.stringify({ name, phone, address, items: cart.map(i => ({ id: i.id, qty: i.qty })) })
                 });
                 const data = await res.json();
                 if (data.ok) {
@@ -1783,13 +1741,22 @@ async def handle_website(request):
         """)
     parts.append('</div></div>')
 
+    # красивая плашка про бесплатную доставку и установку
+    parts.append("""
+        <div class="free-banner">
+            <span class="fb-ico">🚚</span>
+            <div><b>Доставка и установка — бесплатно!</b><span>Привезём заказ к двери и установим. Вы платите только за сам товар.</span></div>
+            <span class="fb-ico">🎁</span>
+        </div>
+    """)
+
     # полоса преимуществ
     parts.append("""
         <div class="perks">
             <div class="perk"><span class="ico">🧵</span><div><b>Всё для шитья</b><small>Нитки, иглы, молнии, фурнитура</small></div></div>
             <div class="perk"><span class="ico">🪡</span><div><b>Удобный выбор</b><small>Каталоги, поиск и избранное</small></div></div>
             <div class="perk"><span class="ico">✂️</span><div><b>Заказ за пару минут</b><small>Корзина и оформление без регистрации</small></div></div>
-            <div class="perk"><span class="ico">🚚</span><div><b>Доставка</b><small>Привезём заказ прямо к двери</small></div></div>
+            <div class="perk"><span class="ico">🚚</span><div><b>Бесплатная доставка</b><small>И установка тоже бесплатно</small></div></div>
         </div>
     """)
 
@@ -1826,18 +1793,8 @@ async def handle_website(request):
                 if len(d) > 110 or d.count("\n") >= 3:
                     desc_html += f'<span class="desc-more" onclick="showModal({js_str(name)}, {js_str(d)})">Подробнее →</span>'
 
-            # кнопки-опции (если есть)
-            opts = parse_options(options_raw)
-            opts_html = ''
-            if opts:
-                btns = "".join(
-                    f'<button class="opt-btn" data-opt="{esc(o)}" onclick="pickOpt({int(p_id)}, this)">{esc(o)}</button>'
-                    for o in opts
-                )
-                opts_html = f'<div class="opt-label">Выберите опцию:</div><div class="opt-row">{btns}</div>'
-
             parts.append(f"""
-                <div class="product-card" data-id="{int(p_id)}" data-order="{order_no}" data-price="{price_text}" data-name="{esc(name)}" data-unit="{esc(unit_text)}" data-title="{esc(str(name or '').lower())}" data-cat="{esc(cat or '')}" data-options="{esc(json.dumps(opts, ensure_ascii=False) if opts else '')}">
+                <div class="product-card" data-id="{int(p_id)}" data-order="{order_no}" data-price="{price_text}" data-name="{esc(name)}" data-unit="{esc(unit_text)}" data-title="{esc(str(name or '').lower())}" data-cat="{esc(cat or '')}">
                     <button class="fav-btn" data-id="{int(p_id)}" onclick="toggleFav({int(p_id)}, this)" title="В избранное">♡</button>
                     <div>
                         {img_html}
@@ -1845,7 +1802,6 @@ async def handle_website(request):
                         <div class="product-title">{esc(name)}</div>
                         {desc_html}
                         <div class="product-price">{price_text} сом {old_price} {disc_badge}</div>
-                        {opts_html}
                     </div>
                     <button class="add-btn" onclick="addToCart({int(p_id)}, {js_str(name)}, {price_text}, {js_str(unit_text)})">В корзину ({esc(unit_text)})</button>
                 </div>
@@ -1949,22 +1905,14 @@ async def handle_order(request):
             return order_error("Неверные данные заказа.")
         if qty < 1 or qty > 99:
             return order_error("Неверное количество товара.")
-        rows = db_all("SELECT name, unit, price, discount, options FROM products WHERE id = ?", (pid,))
+        rows = db_all("SELECT name, unit, price, discount FROM products WHERE id = ?", (pid,))
         if not rows:
             return order_error("Один из товаров больше недоступен. Обновите страницу.")
-        pname, unit, price, disc, options_raw = rows[0]
-        opts = parse_options(options_raw)
-        opt = str(entry.get("opt") or "").strip()
-        if opts:
-            if opt not in opts:
-                return order_error(f"Выберите опцию для товара «{pname}».")
-        else:
-            opt = ""
+        pname, unit, price, disc = rows[0]
         price = effective_price(price, disc)
         line_total = price * qty
         subtotal += line_total
-        opt_text = f" ({opt})" if opt else ""
-        lines.append(f"• {pname}{opt_text} × {qty} {unit or 'шт'} = {fmt_price(line_total)} сом")
+        lines.append(f"• {pname} × {qty} {unit or 'шт'} = {fmt_price(line_total)} сом")
 
     delivery = DELIVERY_FEE
     total = subtotal + delivery
