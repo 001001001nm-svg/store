@@ -29,7 +29,7 @@ logging.basicConfig(level=logging.INFO)
 BOT_TOKEN = os.environ.get("BOT_TOKEN", "8708493966:AAFfGohPh6jmyuWopT57LQVn-bQ_NNMt_7E")
 SUPER_ADMIN_ID = int(os.environ.get("SUPER_ADMIN_ID", "8636623905"))
 DB_PATH = os.environ.get("DB_PATH", "store.db")
-SHOP_PHONE = os.environ.get("SHOP_PHONE", "+996 700 000 000")
+SHOP_PHONE = os.environ.get("SHOP_PHONE", "+996 708 393 975")
 
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher(storage=MemoryStorage())
