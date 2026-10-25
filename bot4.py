@@ -22,12 +22,14 @@ logging.basicConfig(level=logging.INFO)
 # ============================================================
 #  НАСТРОЙКИ (задаются в Render -> Environment)
 #  BOT_TOKEN      - токен бота (обязательно)
-#  SUPER_ADMIN_ID - Telegram ID владельца
+#  SUPER_ADMIN_ID - Telegram ID первого владельца
+#  SECOND_OWNER_ID - Telegram ID второго владельца
 #  DB_PATH        - путь к базе (при Persistent Disk, напр. /data/store.db)
 #  (телефоны и адреса магазина меняются в коде: SHOP_PHONES / SHOP_ADDRESSES)
 # ============================================================
 BOT_TOKEN = os.environ.get("BOT_TOKEN", "8708493966:AAH__oGZTbNXzP58vD0T3MycH3qYi385PrA")
 SUPER_ADMIN_ID = int(os.environ.get("SUPER_ADMIN_ID", "8636623905"))
+SECOND_OWNER_ID = int(os.environ.get("SECOND_OWNER_ID", "5312490946"))
 DB_PATH = os.environ.get("DB_PATH", "store.db")
 
 bot = Bot(token=BOT_TOKEN)
@@ -140,13 +142,29 @@ def get_setting(key, default=None):
 def set_setting(key, value):
     db_run("INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)", (key, str(value)))
 
-def _load_owner():
-    try:
-        return int(get_setting("owner_id") or SUPER_ADMIN_ID)
-    except (TypeError, ValueError):
-        return SUPER_ADMIN_ID
+db_run("CREATE TABLE IF NOT EXISTS owners (user_id INTEGER PRIMARY KEY)")
 
-OWNER_ID = _load_owner()
+def owner_ids():
+    return [r[0] for r in db_all("SELECT user_id FROM owners")]
+
+def is_owner_id(uid):
+    return bool(db_all("SELECT 1 FROM owners WHERE user_id = ?", (uid,)))
+
+def init_owners():
+    """Владельцы лежат в базе. Начальные владельцы добавляются один раз (или если таблица пуста)."""
+    if get_setting("owners_seeded") == "1" and owner_ids():
+        return
+    try:
+        first = int(get_setting("owner_id") or SUPER_ADMIN_ID)
+    except (TypeError, ValueError):
+        first = SUPER_ADMIN_ID
+    for uid in (first, SECOND_OWNER_ID):
+        db_run("INSERT OR IGNORE INTO owners (user_id) VALUES (?)", (uid,))
+        db_run("INSERT OR IGNORE INTO users (user_id, name, username, is_admin) VALUES (?, ?, ?, 1)", (uid, "Владелец", "нет юзернейма"))
+        db_run("UPDATE users SET is_admin = 1 WHERE user_id = ?", (uid,))
+    set_setting("owners_seeded", "1")
+
+init_owners()
 
 def fmt_uname(username):
     return "нет юзернейма" if (not username or username == "нет юзернейма") else f"@{str(username).lstrip('@')}"
@@ -169,15 +187,15 @@ def get_user(user_id):
 
 def register_user(user_id, name, username):
     try:
-        is_admin_val = 1 if user_id == OWNER_ID else 0
+        is_admin_val = 1 if is_owner_id(user_id) else 0
         with closing(sqlite3.connect(DB_PATH)) as conn:
             with conn:
                 conn.execute("""
                     INSERT OR REPLACE INTO users (user_id, name, username, is_admin) 
                     VALUES (?, ?, ?, COALESCE((SELECT is_admin FROM users WHERE user_id = ?), ?))
                 """, (user_id, name, username, user_id, is_admin_val))
-                if user_id == OWNER_ID:
-                    conn.execute("UPDATE users SET is_admin = 1 WHERE user_id = ?", (OWNER_ID,))
+                if is_owner_id(user_id):
+                    conn.execute("UPDATE users SET is_admin = 1 WHERE user_id = ?", (user_id,))
     except Exception as e:
         logging.error(f"Reg error: {e}")
 
@@ -190,7 +208,7 @@ def set_admin_status(user_id, status):
         pass
 
 def can_manage(user_id):
-    if user_id == OWNER_ID:
+    if is_owner_id(user_id):
         return True
     data = get_user(user_id)
     return bool(data and data[1] == 1)
@@ -224,8 +242,7 @@ class StockState(StatesGroup):
     waiting_for_value = State()
 
 class AdState(StatesGroup):
-    waiting_for_title = State()
-    waiting_for_content = State()
+    waiting_for_photo = State()
 
 def main_menu_kb(is_owner, is_admin):
     kb = []
@@ -240,21 +257,26 @@ def main_menu_kb(is_owner, is_admin):
 @dp.message(CommandStart())
 async def cmd_start(message: types.Message, state: FSMContext):
     global BOT_ACTIVE
-    if not BOT_ACTIVE and message.from_user.id != OWNER_ID:
+    if not BOT_ACTIVE and not is_owner_id(message.from_user.id):
         await message.answer("🛠 Бот временно выключен владельцем.")
         return
 
     user_id = message.from_user.id
-    if user_id == OWNER_ID:
-        set_admin_status(OWNER_ID, 1)
+    if is_owner_id(user_id):
+        set_admin_status(user_id, 1)
 
     user_data = get_user(user_id)
+    if user_data:
+        if message.from_user.username:
+            db_run("UPDATE users SET username = ? WHERE user_id = ?", (message.from_user.username, user_id))
+        db_run("UPDATE users SET name = ? WHERE user_id = ? AND name IN ('Владелец', 'Админ')", (message.from_user.full_name, user_id))
+        user_data = get_user(user_id)
     if not user_data:
         await message.answer("Привет! Как тебя зовут? Введи свое имя:")
         await state.set_state(RegState.waiting_for_name)
     else:
         name, is_admin = user_data
-        is_owner = (user_id == OWNER_ID)
+        is_owner = (is_owner_id(user_id))
         if not is_owner and is_admin != 1:
             await message.answer("Ожидайте назначения на администратора😇", reply_markup=types.ReplyKeyboardRemove())
             return
@@ -267,14 +289,15 @@ async def notify_owner_new_user(user_id, name, username):
     kb = types.InlineKeyboardMarkup(inline_keyboard=[[
         types.InlineKeyboardButton(text="✅ Назначить админом", callback_data=f"mkadm:{user_id}")
     ]])
-    try:
-        await bot.send_message(
-            OWNER_ID,
-            f"👤 Новый пользователь ждёт назначения:\n{name} ({uname}) — {user_id}",
-            reply_markup=kb
-        )
-    except Exception as e:
-        logging.warning(f"Не удалось уведомить владельца о пользователе {user_id}: {e}")
+    for oid in owner_ids():
+        try:
+            await bot.send_message(
+                oid,
+                f"👤 Новый пользователь ждёт назначения:\n{name} ({uname}) — {user_id}",
+                reply_markup=kb
+            )
+        except Exception as e:
+            logging.warning(f"Не удалось уведомить владельца {oid} о пользователе {user_id}: {e}")
 
 async def notify_new_admin(uid):
     """Сообщает пользователю, что его назначили админом. True — если сообщение дошло."""
@@ -296,7 +319,7 @@ async def process_reg_name(message: types.Message, state: FSMContext):
     register_user(user_id, name, username)
     await state.clear()
     
-    is_owner = (user_id == OWNER_ID)
+    is_owner = (is_owner_id(user_id))
     user_data = get_user(user_id)
     is_admin = user_data[1] == 1 if user_data else 0
     if is_owner or is_admin:
@@ -308,7 +331,7 @@ async def process_reg_name(message: types.Message, state: FSMContext):
 
 @dp.message(F.text == "👑 Панель владельца")
 async def owner_panel(message: types.Message, state: FSMContext = None):
-    if message.from_user.id != OWNER_ID:
+    if not is_owner_id(message.from_user.id):
         return
     if state:
         await state.clear()
@@ -329,7 +352,7 @@ async def owner_panel(message: types.Message, state: FSMContext = None):
 @dp.message(F.text.in_(["🔴 Выключить бота", "🟢 Включить бота"]))
 async def toggle_bot(message: types.Message):
     global BOT_ACTIVE
-    if message.from_user.id != OWNER_ID:
+    if not is_owner_id(message.from_user.id):
         return
     BOT_ACTIVE = not BOT_ACTIVE
     await owner_panel(message)
@@ -337,7 +360,7 @@ async def toggle_bot(message: types.Message):
 @dp.message(F.text.in_(["🔴 Выключить сайт", "🟢 Включить сайт"]))
 async def toggle_site(message: types.Message):
     global SITE_ACTIVE
-    if message.from_user.id != OWNER_ID:
+    if not is_owner_id(message.from_user.id):
         return
     SITE_ACTIVE = not SITE_ACTIVE
     await owner_panel(message)
@@ -348,7 +371,7 @@ async def back_to_main(message: types.Message, state: FSMContext):
     user_id = message.from_user.id
     user_data = get_user(user_id)
     is_admin = user_data[1] == 1 if user_data else False
-    kb = main_menu_kb(user_id == OWNER_ID, is_admin)
+    kb = main_menu_kb(is_owner_id(user_id), is_admin)
     await message.answer("Главное меню:", reply_markup=kb)
 
 # ============================================================
@@ -382,6 +405,7 @@ def products_menu_kb():
     return back_row_kb([
         [types.KeyboardButton(text="➕ Добавить товар"), types.KeyboardButton(text="📋 Список товаров")],
         [types.KeyboardButton(text="💲 Сменить цену"), types.KeyboardButton(text="🔢 Изменить кол-во")],
+        [types.KeyboardButton(text="✏️ Изменить инфо о товаре")],
         [types.KeyboardButton(text="🗑 Убрать все товары")],
     ])
 
@@ -781,8 +805,11 @@ def ads_menu_kb():
     ])
 
 def ads_view():
-    rows = db_all("SELECT id, title, content FROM advertisements ORDER BY id")
-    items = [(aid, f"{title} — {content}", str(title)) for aid, title, content in rows]
+    rows = db_all("SELECT id, title, content, photo FROM advertisements ORDER BY id")
+    items = []
+    for aid, title, content, photo in rows:
+        line = f"🖼 Реклама №{aid} (фото)" if photo else f"{title} — {content}"
+        items.append((aid, line, f"Реклама №{aid}"))
     return build_list("📢 Реклама (нажми ❌, чтобы удалить):", items, "dela", "Рекламы пока нет.")
 
 @dp.message(F.text == "📢 Реклама")
@@ -815,30 +842,35 @@ async def add_ad_start(message: types.Message, state: FSMContext):
     if not can_manage(message.from_user.id):
         return
     await state.clear()
-    await state.set_state(AdState.waiting_for_title)
-    await message.answer("Введи заголовок рекламы:", reply_markup=back_row_kb([]))
-
-@dp.message(AdState.waiting_for_title, F.text)
-async def add_ad_title(message: types.Message, state: FSMContext):
-    await state.update_data(title=message.text.strip())
-    await state.set_state(AdState.waiting_for_content)
-    await message.answer("Введи текст рекламы:")
-
-@dp.message(AdState.waiting_for_content, F.text)
-async def add_ad_content(message: types.Message, state: FSMContext):
-    data = await state.get_data()
-    db_run(
-        "INSERT INTO advertisements (title, content, photo) VALUES (?, ?, NULL)",
-        (data.get("title"), message.text.strip())
+    await state.set_state(AdState.waiting_for_photo)
+    await message.answer(
+        "Отправь фото рекламы. Оно займёт всю рекламную панель на сайте.\n"
+        "Лучше горизонтальное фото 16:9 (например, 1280×720).",
+        reply_markup=back_row_kb([])
     )
+
+async def save_ad(message: types.Message, state: FSMContext, file_id):
+    db_run("INSERT INTO advertisements (title, content, photo) VALUES ('', '', ?)", (file_id,))
     await state.clear()
     await message.answer("✅ Реклама добавлена и уже на сайте.", reply_markup=ads_menu_kb())
+
+@dp.message(AdState.waiting_for_photo, F.photo)
+async def add_ad_photo(message: types.Message, state: FSMContext):
+    await save_ad(message, state, message.photo[-1].file_id)
+
+@dp.message(AdState.waiting_for_photo, F.document.mime_type.startswith("image/"))
+async def add_ad_photo_file(message: types.Message, state: FSMContext):
+    await save_ad(message, state, message.document.file_id)
+
+@dp.message(AdState.waiting_for_photo)
+async def add_ad_wrong(message: types.Message):
+    await message.answer("Отправь именно фото рекламы.")
 
 # ============================================================
 #  👑 АДМИНЫ (панель владельца)
 # ============================================================
 def admins_view():
-    rows = db_all("SELECT user_id, name, username FROM users WHERE is_admin = 1 AND user_id != ?", (OWNER_ID,))
+    rows = db_all("SELECT user_id, name, username FROM users WHERE is_admin = 1 AND user_id NOT IN (SELECT user_id FROM owners)")
     items = [(uid, f"{name} ({fmt_uname(username)}) — ID {uid}", str(name)) for uid, name, username in rows]
     return build_list("👥 Админы (нажми ❌, чтобы снять права):", items, "deladm", "Других админов пока нет.")
 
@@ -858,20 +890,24 @@ async def grant_admin(uid):
 
 @dp.message(F.text == "➕ Назначить админа")
 async def add_admin_start(message: types.Message, state: FSMContext):
-    if message.from_user.id != OWNER_ID:
+    if not is_owner_id(message.from_user.id):
         return
     await state.set_state(OwnerState.waiting_for_admin_input)
     await message.answer("Введи Telegram ID нового админа (числом):")
 
 @dp.message(OwnerState.waiting_for_admin_input, F.text)
 async def add_admin_input(message: types.Message, state: FSMContext):
-    if message.from_user.id != OWNER_ID:
+    if not is_owner_id(message.from_user.id):
         return
     text = message.text.strip()
     if not text.isdigit():
         await message.answer("ID должен быть числом. Попробуй ещё раз:")
         return
     uid = int(text)
+    if is_owner_id(uid):
+        await state.clear()
+        await message.answer("Этот человек уже владелец — права админа ему не нужны.")
+        return
     await grant_admin(uid)
     await state.clear()
     delivered = await notify_new_admin(uid)
@@ -882,7 +918,7 @@ def participants_chunks():
     rows = db_all("SELECT user_id, name, username, is_admin FROM users ORDER BY is_admin DESC, name")
     lines = []
     for uid, name, username, adm in rows:
-        role = "👑 владелец" if uid == OWNER_ID else ("🛡 админ" if adm == 1 else "👤 участник")
+        role = "👑 владелец" if is_owner_id(uid) else ("🛡 админ" if adm == 1 else "👤 участник")
         lines.append(f"{name} ({fmt_uname(username)}) — ID {uid} · {role}")
     chunks, cur = [], "👥 Участники бота:\n"
     for line in lines:
@@ -896,7 +932,7 @@ def participants_chunks():
 
 @dp.message(F.text == "🔁 Передать права владельца")
 async def transfer_start(message: types.Message, state: FSMContext):
-    if message.from_user.id != OWNER_ID:
+    if not is_owner_id(message.from_user.id):
         return
     await state.clear()
     chunks, total = participants_chunks()
@@ -913,7 +949,7 @@ async def transfer_start(message: types.Message, state: FSMContext):
 
 @dp.message(OwnerState.waiting_for_transfer_input, F.text)
 async def transfer_input(message: types.Message, state: FSMContext):
-    if message.from_user.id != OWNER_ID:
+    if not is_owner_id(message.from_user.id):
         return
     text = message.text.strip()
     if text.isdigit():
@@ -925,8 +961,8 @@ async def transfer_input(message: types.Message, state: FSMContext):
         await message.answer("Такого участника нет в списке (он должен был запустить бота). Проверь юзернейм или ID и напиши ещё раз:")
         return
     uid, name, username = rows[0]
-    if uid == OWNER_ID:
-        await message.answer("Ты и так владелец. Напиши другого участника:")
+    if is_owner_id(uid):
+        await message.answer("Этот участник уже владелец. Напиши другого:")
         return
     await state.clear()
     kb = types.InlineKeyboardMarkup(inline_keyboard=[[
@@ -941,8 +977,7 @@ async def transfer_input(message: types.Message, state: FSMContext):
 
 @dp.callback_query(F.data.startswith("xfer:"))
 async def transfer_confirm(call: types.CallbackQuery):
-    global OWNER_ID
-    if call.from_user.id != OWNER_ID:
+    if not is_owner_id(call.from_user.id):
         await call.answer("Нет доступа", show_alert=True)
         return
     parts = call.data.split(":")
@@ -950,12 +985,13 @@ async def transfer_confirm(call: types.CallbackQuery):
         await call.answer("Отменено")
         await refresh_inline(call, "Передача прав отменена.", None)
         return
-    new_id, old_id = int(parts[2]), OWNER_ID
-    if new_id == old_id or not get_user(new_id):
-        await call.answer("Участник не найден", show_alert=True)
+    new_id, old_id = int(parts[2]), call.from_user.id
+    if new_id == old_id or is_owner_id(new_id) or not get_user(new_id):
+        await call.answer("Нельзя передать права этому участнику", show_alert=True)
         return
-    set_setting("owner_id", new_id)
-    OWNER_ID = new_id
+    # передаётся только СВОЯ роль владельца: второй владелец не затрагивается
+    db_run("DELETE FROM owners WHERE user_id = ?", (old_id,))
+    db_run("INSERT OR IGNORE INTO owners (user_id) VALUES (?)", (new_id,))
     set_admin_status(new_id, 1)
     set_admin_status(old_id, 1)
     await call.answer("Готово")
@@ -968,13 +1004,22 @@ async def transfer_confirm(call: types.CallbackQuery):
         await bot.send_message(new_id, f"👑 Тебе переданы права владельца!\nПередал: {user_label(old_id)}", reply_markup=main_menu_kb(True, True))
     except Exception as e:
         logging.warning(f"Не удалось уведомить нового владельца {new_id}: {e}")
+    for oid in owner_ids():
+        if oid not in (new_id, old_id):
+            try:
+                await bot.send_message(oid, f"ℹ️ Владелец передал свои права:\n{user_label(old_id)} → {user_label(new_id)}")
+            except Exception as e:
+                logging.info(f"notify owner {oid} skipped: {e}")
 
 @dp.callback_query(F.data.startswith("mkadm:"))
 async def approve_admin(call: types.CallbackQuery):
-    if call.from_user.id != OWNER_ID:
+    if not is_owner_id(call.from_user.id):
         await call.answer("Нет доступа", show_alert=True)
         return
     uid = int(call.data.split(":")[1])
+    if is_owner_id(uid):
+        await call.answer("Это владелец", show_alert=True)
+        return
     await grant_admin(uid)
     delivered = await notify_new_admin(uid)
     await call.answer("Назначен")
@@ -983,7 +1028,7 @@ async def approve_admin(call: types.CallbackQuery):
 
 @dp.message(F.text == "👥 Список админов")
 async def admins_list(message: types.Message, state: FSMContext):
-    if message.from_user.id != OWNER_ID:
+    if not is_owner_id(message.from_user.id):
         return
     await state.clear()
     text, kb = admins_view()
@@ -991,10 +1036,13 @@ async def admins_list(message: types.Message, state: FSMContext):
 
 @dp.callback_query(F.data.startswith("deladm:"))
 async def delete_admin(call: types.CallbackQuery):
-    if call.from_user.id != OWNER_ID:
+    if not is_owner_id(call.from_user.id):
         await call.answer("Нет доступа", show_alert=True)
         return
     uid = int(call.data.split(":")[1])
+    if is_owner_id(uid):
+        await call.answer("Это владелец — его права снять нельзя", show_alert=True)
+        return
     label = user_label(uid)
     set_admin_status(uid, 0)
     await call.answer("Права сняты")
@@ -1044,7 +1092,7 @@ async def notify_admins(order_id):
     if not rows:
         return
     text = order_text(rows[0])
-    ids = {OWNER_ID} | {r[0] for r in db_all("SELECT user_id FROM users WHERE is_admin = 1")}
+    ids = set(owner_ids()) | {r[0] for r in db_all("SELECT user_id FROM users WHERE is_admin = 1")}
     for chat_id in ids:
         try:
             sent = await bot.send_message(chat_id, text, reply_markup=done_kb(order_id))
@@ -1131,6 +1179,204 @@ async def archive_orders(message: types.Message, state: FSMContext):
         return
     for chunk in archive_chunks(rows):
         await message.answer(chunk)
+
+# ============================================================
+#  ✏️ ИЗМЕНИТЬ ИНФОРМАЦИЮ О ТОВАРЕ
+# ============================================================
+class EditState(StatesGroup):
+    waiting_for_value = State()
+
+EDIT_PROMPTS = {
+    "name": "Введи новое название товара:",
+    "price": "Введи новую цену (числом, например 120 или 99.5):",
+    "unit": "Введи новую единицу измерения (например: шт, кг, л, упак):",
+    "stock": "Введи количество штук в наличии (целым числом):",
+    "desc": "Отправь новое описание товара. Чтобы удалить описание — отправь «-»:",
+    "photo": "Отправь новое фото товара:",
+}
+EDIT_COLUMNS = {"name": "name", "price": "price", "unit": "unit", "stock": "stock", "desc": "description", "photo": "photo"}
+
+def product_card_text(pid):
+    rows = db_all("SELECT name, unit, price, discount, category, description, stock, photo FROM products WHERE id = ?", (pid,))
+    if not rows:
+        return None
+    name, unit, price, disc, cat, desc, stock, photo = rows[0]
+    d = (desc or "").strip()
+    if len(d) > 300:
+        d = d[:300] + "…"
+    price_line = f"💲 Цена: {fmt_price(price)} сом / {unit or 'шт'}"
+    if disc:
+        price_line += f" (скидка {disc})"
+    return (
+        f"✏️ Товар №{pid}\n\n"
+        f"📦 Название: {name}\n"
+        f"{price_line}\n"
+        f"🔢 В наличии: {fmt_stock(stock)}\n"
+        f"📁 Каталог: {cat or 'без каталога'}\n"
+        f"🖼 Фото: {'есть' if photo else 'нет'}\n"
+        f"📝 Описание: {d or 'нет'}\n\n"
+        "Что изменить?"
+    )
+
+def edit_menu_kb(pid):
+    def b(text, data):
+        return types.InlineKeyboardButton(text=text, callback_data=data)
+    return types.InlineKeyboardMarkup(inline_keyboard=[
+        [b("✏️ Название", f"ef:name:{pid}"), b("💲 Цена", f"ef:price:{pid}")],
+        [b("📏 Ед. измерения", f"ef:unit:{pid}"), b("🔢 Кол-во", f"ef:stock:{pid}")],
+        [b("📝 Описание", f"ef:desc:{pid}"), b("🖼 Фото", f"ef:photo:{pid}")],
+        [b("📁 Каталог", f"ecatmenu:{pid}")],
+        [b("🔙 К списку товаров", "elist")],
+    ])
+
+async def send_edit_list(target):
+    rows = db_all("SELECT id, name FROM products ORDER BY id")
+    if not rows:
+        await target.answer("Товаров пока нет.")
+        return
+    chunks = [rows[i:i + 50] for i in range(0, len(rows), 50)]
+    for n, chunk in enumerate(chunks):
+        buttons = [[types.InlineKeyboardButton(text=str(name)[:45], callback_data=f"epick:{pid}")] for pid, name in chunk]
+        title = "✏️ Выбери товар, информацию о котором нужно изменить:" if n == 0 else "…продолжение списка:"
+        await target.answer(title, reply_markup=types.InlineKeyboardMarkup(inline_keyboard=buttons))
+
+@dp.message(F.text == "✏️ Изменить инфо о товаре")
+async def edit_menu(message: types.Message, state: FSMContext):
+    if not can_manage(message.from_user.id):
+        return
+    await state.clear()
+    await send_edit_list(message)
+
+@dp.callback_query(F.data == "elist")
+async def edit_back_to_list(call: types.CallbackQuery, state: FSMContext):
+    if not can_manage(call.from_user.id):
+        await call.answer("Нет доступа", show_alert=True)
+        return
+    await state.clear()
+    await call.answer()
+    await send_edit_list(call.message)
+
+@dp.callback_query(F.data.startswith("epick:"))
+async def edit_pick(call: types.CallbackQuery, state: FSMContext):
+    if not can_manage(call.from_user.id):
+        await call.answer("Нет доступа", show_alert=True)
+        return
+    pid = int(call.data.split(":")[1])
+    text = product_card_text(pid)
+    if not text:
+        await call.answer("Товар не найден", show_alert=True)
+        return
+    await state.clear()
+    await call.answer()
+    await call.message.answer(text, reply_markup=edit_menu_kb(pid))
+
+@dp.callback_query(F.data.startswith("ef:"))
+async def edit_field_pick(call: types.CallbackQuery, state: FSMContext):
+    if not can_manage(call.from_user.id):
+        await call.answer("Нет доступа", show_alert=True)
+        return
+    _, field, pid = call.data.split(":")
+    pid = int(pid)
+    if field not in EDIT_PROMPTS or not db_all("SELECT 1 FROM products WHERE id = ?", (pid,)):
+        await call.answer("Товар не найден", show_alert=True)
+        return
+    await state.set_state(EditState.waiting_for_value)
+    await state.update_data(product_id=pid, field=field)
+    await call.answer()
+    await call.message.answer(EDIT_PROMPTS[field], reply_markup=back_row_kb([]))
+
+@dp.callback_query(F.data.startswith("ecatmenu:"))
+async def edit_cat_menu(call: types.CallbackQuery):
+    if not can_manage(call.from_user.id):
+        await call.answer("Нет доступа", show_alert=True)
+        return
+    pid = int(call.data.split(":")[1])
+    cats = db_all("SELECT id, name FROM categories ORDER BY name")
+    buttons = [[types.InlineKeyboardButton(text=str(n)[:40], callback_data=f"ecat:{pid}:{cid}")] for cid, n in cats]
+    buttons.append([types.InlineKeyboardButton(text="Без каталога", callback_data=f"ecat:{pid}:0")])
+    buttons.append([types.InlineKeyboardButton(text="🔙 Назад", callback_data=f"epick:{pid}")])
+    await call.answer()
+    await call.message.answer("📁 Выбери каталог для товара:", reply_markup=types.InlineKeyboardMarkup(inline_keyboard=buttons))
+
+@dp.callback_query(F.data.startswith("ecat:"))
+async def edit_cat_set(call: types.CallbackQuery):
+    if not can_manage(call.from_user.id):
+        await call.answer("Нет доступа", show_alert=True)
+        return
+    _, pid, cid = call.data.split(":")
+    pid, cid = int(pid), int(cid)
+    name = ""
+    if cid:
+        rows = db_all("SELECT name FROM categories WHERE id = ?", (cid,))
+        if not rows:
+            await call.answer("Каталог не найден", show_alert=True)
+            return
+        name = rows[0][0]
+    if not db_all("SELECT 1 FROM products WHERE id = ?", (pid,)):
+        await call.answer("Товар не найден", show_alert=True)
+        return
+    db_run("UPDATE products SET category = ? WHERE id = ?", (name, pid))
+    await call.answer("Каталог изменён")
+    await refresh_inline(call, "✅ Каталог изменён.", None)
+    await call.message.answer(product_card_text(pid), reply_markup=edit_menu_kb(pid))
+
+async def apply_edit(message: types.Message, state: FSMContext, field, value):
+    data = await state.get_data()
+    pid = data.get("product_id")
+    await state.clear()
+    if not db_all("SELECT 1 FROM products WHERE id = ?", (pid,)):
+        await message.answer("Этот товар уже удалён.", reply_markup=products_menu_kb())
+        return
+    db_run(f"UPDATE products SET {EDIT_COLUMNS[field]} = ? WHERE id = ?", (value, pid))
+    await message.answer("✅ Изменено. Уже на сайте.", reply_markup=products_menu_kb())
+    await message.answer(product_card_text(pid), reply_markup=edit_menu_kb(pid))
+
+@dp.message(EditState.waiting_for_value, F.photo)
+async def edit_value_photo(message: types.Message, state: FSMContext):
+    data = await state.get_data()
+    field = data.get("field")
+    if field != "photo":
+        await message.answer("Сейчас нужен текст, а не фото. " + EDIT_PROMPTS.get(field, ""))
+        return
+    await apply_edit(message, state, "photo", message.photo[-1].file_id)
+
+@dp.message(EditState.waiting_for_value, F.text)
+async def edit_value_text(message: types.Message, state: FSMContext):
+    data = await state.get_data()
+    field = data.get("field")
+    text = message.text.strip()
+    if field == "photo":
+        await message.answer("Отправь именно фото (не текст).")
+        return
+    if field == "name":
+        if not text:
+            await message.answer("Название не может быть пустым. " + EDIT_PROMPTS["name"])
+            return
+        value = text[:200]
+    elif field == "unit":
+        if not text:
+            await message.answer(EDIT_PROMPTS["unit"])
+            return
+        value = text[:20]
+    elif field == "price":
+        try:
+            value = float(text.replace(",", ".").replace(" ", ""))
+            if value < 0:
+                raise ValueError
+        except ValueError:
+            await message.answer("Введи цену числом, например 120 или 99.5")
+            return
+    elif field == "stock":
+        if not text.isdigit() or int(text) > 1000000:
+            await message.answer("Введи количество целым числом, например 25")
+            return
+        value = int(text)
+    elif field == "desc":
+        value = None if text == "-" else text[:1000]
+    else:
+        await state.clear()
+        return
+    await apply_edit(message, state, field, value)
 
 # ============================================================
 #  ВЕБ-СЕРВЕР И САЙТ «ШВЕЙМАГ KG»
@@ -1258,10 +1504,14 @@ button{font-family:inherit}
 /* РЕКЛАМА (карусель) */
 .ads{position:relative;border-radius:24px;overflow:hidden;background:#fff;padding:8px;box-shadow:0 12px 28px rgba(5,40,80,.25);touch-action:pan-y}
 .ad-track{display:flex;transition:transform .5s ease;border-radius:18px}
-.slide{min-width:100%;border-radius:18px;color:#fff;position:relative;overflow:hidden}
+.slide{flex:0 0 100%;min-width:100%;border-radius:18px;color:#fff;position:relative;overflow:hidden}
 .slide-in{padding:26px 26px 30px;min-height:176px;position:relative;z-index:2;display:flex;flex-direction:column;justify-content:center}
 .slide::after{content:'';position:absolute;inset:8px;border:2px dashed rgba(255,255,255,.55);border-radius:13px;pointer-events:none}
 .slide::before{content:'🧵';position:absolute;right:16px;bottom:-6px;font-size:84px;opacity:.2;transform:rotate(14deg)}
+.slide.photo{aspect-ratio:16/9;background:#0b3257}
+.slide.photo::before{content:'';position:absolute;inset:-24px;background:var(--img) center/cover;filter:blur(20px) brightness(.92);opacity:1;transform:none}
+.slide.photo::after{display:none}
+.slide.photo img{position:absolute;inset:0;z-index:2;width:100%;height:100%;object-fit:contain;display:block}
 .g0{background:linear-gradient(135deg,#0a5fa3,#1a9bf0)}
 .g1{background:linear-gradient(135deg,#ff6b4a,#ffa24c)}
 .g2{background:linear-gradient(135deg,#0b3257,#0b7ccf)}
@@ -1771,7 +2021,9 @@ function renderAds() {
     { title: 'Нужна консультация?', content: 'Позвоните или напишите в WhatsApp — поможем выбрать машинку под ваши задачи.' }
   ];
   nSlides = ads.length;
-  $('adTrack').innerHTML = ads.map((a, i) => '<div class="slide g' + (i % 4) + '"><div class="slide-in"><span class="slide-tag">📢 Объявление</span><h3>' + esc(a.title) + '</h3><p>' + esc(a.content) + '</p></div></div>').join('');
+  $('adTrack').innerHTML = ads.map((a, i) => a.photo
+    ? '<div class="slide photo" style="--img:url(/adphoto/' + a.id + ')"><img src="/adphoto/' + a.id + '" alt="Реклама" loading="' + (i ? 'lazy' : 'eager') + '"></div>'
+    : '<div class="slide g' + (i % 4) + '"><div class="slide-in"><span class="slide-tag">📢 Объявление</span><h3>' + esc(a.title) + '</h3><p>' + esc(a.content) + '</p></div></div>').join('');
   $('adDots').innerHTML = ads.map((a, i) => '<i onclick="goSlide(' + i + ')"></i>').join('');
   document.querySelectorAll('.ad-arrow').forEach(b => { b.style.display = nSlides > 1 ? '' : 'none'; });
   goSlide(0); startAds();
@@ -2117,7 +2369,10 @@ async def handle_website(request):
             "photo": bool(photo),
         })
     categories = [r[0] for r in db_all("SELECT name FROM categories ORDER BY id")]
-    ads = [{"title": str(t or ""), "content": str(c or "")} for t, c in db_all("SELECT title, content FROM advertisements ORDER BY id")]
+    ads = [
+        {"id": int(i), "title": str(t or ""), "content": str(c or ""), "photo": bool(ph)}
+        for i, t, c, ph in db_all("SELECT id, title, content, photo FROM advertisements ORDER BY id")
+    ]
 
     data = {
         "name": SHOP_NAME,
@@ -2135,16 +2390,9 @@ async def handle_website(request):
 # ---------- ФОТО ТОВАРОВ (берём из Telegram и кэшируем) ----------
 PHOTO_DIR = os.path.join(os.path.dirname(os.path.abspath(DB_PATH)), "photos")
 
-async def handle_photo(request):
-    try:
-        pid = int(request.match_info["pid"])
-    except (KeyError, ValueError):
-        return web.Response(status=404)
-    rows = db_all("SELECT photo FROM products WHERE id = ?", (pid,))
-    file_id = rows[0][0] if rows else None
+async def serve_tg_file(file_id):
     if not file_id:
         return web.Response(status=404)
-
     safe_name = re.sub(r"[^A-Za-z0-9_-]", "", str(file_id))[:150]
     if not safe_name:
         return web.Response(status=404)
@@ -2156,9 +2404,25 @@ async def handle_photo(request):
             await bot.download(file_id, destination=tmp_path)
             os.replace(tmp_path, path)
     except Exception as e:
-        logging.error(f"Photo error for product {pid}: {e}")
+        logging.error(f"Photo error for {safe_name}: {e}")
         return web.Response(status=404)
     return web.FileResponse(path, headers={"Cache-Control": "public, max-age=86400"})
+
+async def handle_photo(request):
+    try:
+        pid = int(request.match_info["pid"])
+    except (KeyError, ValueError):
+        return web.Response(status=404)
+    rows = db_all("SELECT photo FROM products WHERE id = ?", (pid,))
+    return await serve_tg_file(rows[0][0] if rows else None)
+
+async def handle_adphoto(request):
+    try:
+        aid = int(request.match_info["aid"])
+    except (KeyError, ValueError):
+        return web.Response(status=404)
+    rows = db_all("SELECT photo FROM advertisements WHERE id = ?", (aid,))
+    return await serve_tg_file(rows[0][0] if rows else None)
 
 # ---------- ПРИЁМ ЗАКАЗОВ С САЙТА ----------
 KG_PREFIXES = {"755", "880", "990", "995", "999", "222"}
@@ -2252,6 +2516,7 @@ async def run_web():
     app.router.add_get('/', handle_website)
     app.router.add_post('/order', handle_order)
     app.router.add_get('/photo/{pid}', handle_photo)
+    app.router.add_get('/adphoto/{aid}', handle_adphoto)
     runner = web.AppRunner(app)
     await runner.setup()
     port = int(os.environ.get("PORT", 10000))
